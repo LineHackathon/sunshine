@@ -69,7 +69,7 @@ def get_name(uid):
 
 @handler.add(FollowEvent)
 def handle_follow_message(event):
-    msg = u'グループIDを入力してください'
+    msg = u'はじめまして、Checkunです。友達登録していただきありがとうございます。清算のやり取りをおこなうグループに私を招待してください。そこで発行されるグループIDを入力してください'
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(text=msg))
@@ -82,9 +82,10 @@ def handle_join_message(event):
     if(event.source.type == 'group'):
         # group_id_temp = event.source.group_id
         msg = \
-            u'次のURLからお友達に追加してください\n' \
-            u'https://line.me/R/ti/p/lvTHsDPv_o\n' \
-            u'次のグループIDをコピペして友だちのメッセージに入力してください'
+            u'はじめまして、Checkunです。このグループの会計係をさせていただきます！\n' \
+            u'ますは、このグループメンバー全員の方とお友達になりたいです。\n' \
+            u'次のURLから私と友達になって、以下のグループIDをコピー＆ペーストしてください！\n' \
+            u'https://line.me/R/ti/p/lvTHsDPv_o\n'
         line_bot_api.reply_message(event.reply_token, TextSendMessage(msg))
 
         line_bot_api.push_message(event.source.group_id,
@@ -104,12 +105,12 @@ def get_template_msg():
             actions=[
                 PostbackTemplateAction(
                     label='OK',
-                    text='始める',
+                    text='精算をお願いします',
                     data='start checkout'
                 ),
                 PostbackTemplateAction(
                     label='cancel',
-                    text='中止',
+                    text='精算を中止してください',
                     data='cancel checkout'
                 ),
             ]
@@ -130,9 +131,9 @@ def handle_text_message(event):
         if(event.message.text == warikan.group_id):
             line_bot_api.reply_message(
                 event.reply_token,
-                TextSendMessage(text='割り勘システムに登録しました'))
+                TextSendMessage(text='グループとつながりました！'))
             warikan.add_user(uid)
-            msg = name + u'さんが友達登録しました'
+            msg = name + u'さんがグループIDとつながりました！'
             line_bot_api.push_message(
                 warikan.group_id,
                 TextSendMessage(text=msg))
@@ -147,19 +148,20 @@ def handle_text_message(event):
             warikan.add_amount(uid, amount)
 
             msg = name + u'さんは合計' + str(warikan.amount_dict[uid]) + u'円支払いました'
+            # msg = name + u'さんは合計{:,d}円支払いました'.format(warikan.amount_dict[uid])
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=msg))
             pass
 
-        elif(event.message.text == u'支払'):
+        elif(event.message.text == u'支払入力をはじめる'):
             line_bot_api.reply_message(
                 event.reply_token,
-                TextSendMessage(text=u'金額を入力してください'))
+                TextSendMessage(text=u'みなさんのために何か支払われたのですね。支払われた金額を入力してください'))
             pass
 
-        elif(event.message.text == u'確認'):
-            msg = ''
+        elif(event.message.text == u'支払内容を確認する'):
+            msg = u'現時点の支払内容をご報告します\n'
             total = 0
             for uid in warikan.amount_dict:
             # for uid in amount_dict:
@@ -181,7 +183,7 @@ def handle_text_message(event):
             #         )))
             pass
 
-        elif(event.message.text == u'精算'):
+        elif(event.message.text == u'精算をお願いします'):
             msg = u'一人あたり' + str(warikan.get_average()) + u'円です'
             line_bot_api.reply_message(
                 event.reply_token,
@@ -192,7 +194,7 @@ def handle_text_message(event):
         elif(event.message.text == u'ヘルプ'):
             line_bot_api.reply_message(
                 event.reply_token,
-                TextSendMessage(text=u'ヘルプはまだない'))
+                TextSendMessage(text=u'申し訳ございません\n準備中です'))
             pass
         else:
             print(u'user')
@@ -229,11 +231,11 @@ def handle_image_message(event):
         save_content(event.message.id, 'static/' + event.message.id + '.jpg')
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=u'画像ありがと'))
+            TextSendMessage(text=u'ありがとう\n画像をみんなにシェアするね'))
         # print('groupid:' + group_id_temp)
         line_bot_api.push_message(
             warikan.group_id,
-            TextSendMessage(text=u'新しい画像がアップロードされたよ'))
+            TextSendMessage(text=get_name(event.source.user_id) + u'が画像をシェアしてくれたよ'))
         line_bot_api.push_message(
             warikan.group_id,
             ImageSendMessage(
@@ -242,8 +244,25 @@ def handle_image_message(event):
             )
         )
 
+def make_paypal_img_msg(url):
+    imagemap_message = ImagemapSendMessage(
+        base_url='https://www.paypal.jp/jp/mms2/service/logos-buttons/images/CO_228_44.png',
+        alt_text='PayPal',
+        base_size=BaseSize(height=200, width=1040),
+        actions=[
+            URIImagemapAction(
+                link_uri=url,
+                area=ImagemapArea(
+                    x=0, y=0, width=200, height=1040
+                )
+            ),
+        ]
+    )
+    return imagemap_message
+
 def start_warikan():
     payment_dict = warikan.calc_warikan()
+    print(u'start_warikan')
     print(payment_dict)
 
     grpmsg = ''
@@ -262,6 +281,7 @@ def start_warikan():
         line_bot_api.push_message(
             uid,
             TextSendMessage(text=pmsg))
+        # print(pmsg)
 
 
     if(grpmsg == ''):
@@ -269,6 +289,24 @@ def start_warikan():
     line_bot_api.push_message(
         warikan.group_id,
         TextSendMessage(text=grpmsg))
+    # print(grpmsg)
+
+    # paypalリンク作成
+    # http://944ce050.ngrok.io/vault_sale?amount=xxx
+    # https://www.paypal.jp/jp/mms2/service/logos-buttons/images/CO_228_44.png
+    for uid in payment_dict:
+        for pay in payment_dict[uid]:
+            if(payment_dict[uid][pay] < 0):
+                url = 'http://944ce050.ngrok.io/vault_sale?amount=' + str(-payment_dict[uid][pay])
+                print(url)
+                # line_bot_api.push_message(
+                #     uid,
+                #     make_paypal_img_msg(url))
+                line_bot_api.push_message(
+                    uid,
+                    TextSendMessage(url))
+
+
 
 @handler.add(PostbackEvent)
 def handle_postback_message(event):
@@ -284,7 +322,7 @@ def handle_postback_message(event):
     elif(event.postback.data == u'cancel checkout'):
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text=u'精算を中止します'))
+            TextSendMessage(text=u'おっと、焦りは禁物ですよ\n精算を中止します'))
         pass
 
 if __name__ == "__main__":

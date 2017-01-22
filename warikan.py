@@ -120,6 +120,7 @@ def calc_warikan():
     for user in sagaku_dict:
         pay_dict[user] = {}
 
+    # とりあえず送金回数最適化無視の送金額決定アルゴリズム
     for user1 in sagaku_dict:
         # print(user1)
         # print(sagaku_dict[user1])
