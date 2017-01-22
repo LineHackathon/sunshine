@@ -1,16 +1,25 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-import os
+import json
 from flask import Flask, request, abort
 from linebot import (LineBotApi, WebhookHandler)
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import *
 
+import warikan
+
+# import sqlite3
+uname_dict = {}
+uid_dict = {}
+
 app = Flask(__name__)
 
-line_bot_api = LineBotApi(os.environ['LINE_CHANNEL_ACCESS_TOKEN'])
-handler = WebhookHandler(os.environ['LINE_CHANNEL_SECRET'])
-base_url = os.environ['LINE_BASE_URL']
+f = open('sunshine_bot.json', 'r')
+json_dict = json.load(f)
+line_bot_api = LineBotApi(json_dict['token'])
+handler = WebhookHandler(json_dict['secret'])
+base_url = json_dict['base_url']
+f.close
 
 print(base_url)
 
@@ -47,62 +56,143 @@ def print_profile(user_id):
     except linebot.LineBotApiError as e:
         print_error(e)
 
+def get_name(user_id):
+    # print_profile(event.source.user_id)
+    if(user_id in uname_dict):
+        name = uname_dict[user_id]
+    else:
+        name =line_bot_api.get_profile(user_id).display_name
+        uname_dict[user_id] = name
+        uid_dict[name] = user_id
+    return name
 
 
 @handler.add(JoinEvent)
 def handle_join_message(event):
-    print(event)
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=u'空前絶後のぉ〜〜〜〜〜〜'))
-    if(event.source.type == 'group'):
+    # print(event)
+    # msg = u'空前絶後のぉ〜〜〜〜〜〜'
+    if(event.source.type == 'user'):
+        msg = u'グループIDを入力してください'
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=msg))
+
+    elif(event.source.type == 'group'):
         # group_id_temp = event.source.group_id
-        line_bot_api.push_message(
-            event.source.group_id,
-            TextSendMessage(text=u'グループIDは' + event.source.group_id + u'です'))
-        pass
+        msg = \
+            u'次のURLからお友達に追加してください\n' \
+            u'https://line.me/R/ti/p/lvTHsDPv_o\n' \
+            u'次のグループIDをコピペして友だちのメッセージに入力してください'
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(msg))
+
+        line_bot_api.push_message(event.source.group_id,
+            TextSendMessage(str(event.source.group_id)))
+        # line_bot_api.push_message(
+        #     event.source.group_id,
+        #     TextSendMessage(text=u'グループIDは' + event.source.group_id + u'です'))
+
+        # グループIDの割り勘DBを作成
+        warikan.set_groupid(event.source.group_id)
+
+def get_template_msg():
+    confirm_template_message = TemplateSendMessage(
+        alt_text='Confirm Checkout',
+        template=ConfirmTemplate(
+            text=u'精算を開始しますか？',
+            actions=[
+                PostbackTemplateAction(
+                    label='OK',
+                    text='始める',
+                    data='start checkout'
+                ),
+                PostbackTemplateAction(
+                    label='cancel',
+                    text='中止',
+                    data='cancel checkout'
+                ),
+            ]
+        )
+    )
+    return confirm_template_message
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
-    print(event)
+    # print(event)
     if(event.source.type == 'user'):
-        print_profile(event.source.user_id)
+        uid = event.source.user_id
+        name = get_name(uid)
 
-        if(event.message.text == u'支払入力'):
+        print(warikan.group_id)
+        print(event.message.text)
+
+        if(event.message.text == warikan.group_id):
+            warikan.add_user(name)
+
+        elif(event.message.text.isdigit()):
+            amount = int(event.message.text)
+            msg = name + u'さんが' + str(amount) + u'円支払いました'
+            line_bot_api.push_message(
+                warikan.group_id,
+                TextSendMessage(text=msg))
+            warikan.add_amount(name, amount)
+
+            msg = name + u'さんは合計' + str(warikan.amount_dict[name]) + u'円支払いました'
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=msg))
+            pass
+
+        elif(event.message.text == u'支払'):
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=u'金額を入力してください'))
             pass
-        elif(event.message.text == u'状況'):
+
+        elif(event.message.text == u'確認'):
+            msg = ''
+            total = 0
+            for p in warikan.amount_dict:
+            # for p in amount_dict:
+                msg += p + u'さんが' + str(warikan.amount_dict[p]) + u'円支払いました\n'
+            # ave = total / len(amount_dict)
+            ave = warikan.get_average()
+            msg += u'一人あたり' + str(ave) + u'円です'
             line_bot_api.reply_message(
                 event.reply_token,
-                TextSendMessage(text=(
-                    u'Aさんが15400円使用しました\n'
-                    u'Bさんが2000円使用しました\n'
-                    u'Cさんが1200円使用しました\n'
-                    u'Dさんが0円使用しました\n'
-                    u'一人あたり4650円です'
-                    )))
+                TextSendMessage(text=msg))
+            # line_bot_api.reply_message(
+            #     event.reply_token,
+            #     TextSendMessage(text=(
+            #         u'Aさんが15400円使用しました\n'
+            #         u'Bさんが2000円使用しました\n'
+            #         u'Cさんが1200円使用しました\n'
+            #         u'Dさんが0円使用しました\n'
+            #         u'一人あたり4650円です'
+            #         )))
+            pass
+
+        elif(event.message.text == u'精算'):
+            msg = u'一人あたり' + str(warikan.get_average()) + u'円です'
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=msg))
+
+            line_bot_api.push_message(warikan.group_id, get_template_msg())
             pass
         elif(event.message.text == u'ヘルプ'):
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=u'ヘルプはまだない'))
             pass
-        elif(event.message.text == u'精算'):
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=u'一人あたり4650円です'))
-            pass
         else:
             print(u'user')
             print(event.source.user_id)
             print(event.message.text)
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=event.message.text))
+            # line_bot_api.reply_message(
+            #     event.reply_token,
+            #     TextSendMessage(text=event.message.text))
             line_bot_api.push_message(
-                'Cd374b84d45da9579f2f0cc7556d35255',
+                warikan.group_id,
                 TextSendMessage(text=event.message.text))
         pass
 
@@ -111,9 +201,9 @@ def handle_text_message(event):
         print(event.source.group_id)
         print(event.message.text)
         # group_id_temp = event.source.group_id
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=event.message.text))
+        # line_bot_api.reply_message(
+        #     event.reply_token,
+        #     TextSendMessage(text=event.message.text))
         pass
 
 def save_content(message_id, filename):
@@ -124,7 +214,7 @@ def save_content(message_id, filename):
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
-    print(event)
+    # print(event)
     if(event.source.type == 'user'):
         save_content(event.message.id, 'static/' + event.message.id + '.jpg')
         line_bot_api.reply_message(
@@ -132,21 +222,49 @@ def handle_image_message(event):
             TextSendMessage(text=u'画像ありがと'))
         # print('groupid:' + group_id_temp)
         line_bot_api.push_message(
-            '',
+            warikan.group_id,
             TextSendMessage(text=u'新しい画像がアップロードされたよ'))
         line_bot_api.push_message(
-            '',
+            warikan.group_id,
             ImageSendMessage(
                 original_content_url=base_url + '/static/' + event.message.id + '.jpg',
                 preview_image_url=base_url + '/static/' + event.message.id + '.jpg'
             )
         )
 
+def start_warikan():
+    payment_dict = warikan.calc_warikan()
+    print(payment_dict)
+
+    msg = ''
+    for name in payment_dict:
+        for pay in payment_dict[name]:
+            msg += name + u'さんは' + pay + u'さんに' \
+                + u'{:,d}'.format(payment_dict[name][pay]) \
+                + u'円払ってください\n'
+            # print(msg)
+                # + str(payment_dict[name][pay]) \
+    line_bot_api.push_message(
+        warikan.group_id,
+        TextSendMessage(text=msg))
+
 @handler.add(PostbackEvent)
 def handle_postback_message(event):
-    print(event)
+    # print(event)
     print(event.postback.data)
+    if(event.postback.data == u'start checkout'):
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=u'精算を始めます'))
 
+        start_warikan()
+
+    elif(event.postback.data == u'cancel checkout'):
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=u'精算を中止します'))
+        pass
 
 if __name__ == "__main__":
+    warikan.load_json(warikan.db_fname)
     app.run(debug=True)

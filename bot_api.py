@@ -32,7 +32,7 @@ def save_group(group_id, group_name):
 #WebhookのJoin Event(group_id)が通知されるので、各グループのメンバー数をカウント（イングリメント）
 #デモではとりあえず1グループ
 def user_count(group_id):
-	line_group_user_count++
+	line_group_user_count+=1
 
 	os.environ['LINE_GROUP_USER_COUNT'] = line_group_user_count
 
@@ -93,6 +93,7 @@ def adjust_amount(group_id, user_id):
 #Yes/No:xxx/Confirmボターンを押した時
 #その他
 def analyze_message(message):
+    pass
 
 
 #ここからはSend Message Object作成用
@@ -100,22 +101,27 @@ def analyze_message(message):
 #helpメッセージ
 #固定の文字列かTemplateMessage?
 def create_help():
+    pass
 
 #２つのアクションボタンを提示するTemplateMessage
 def create_confirm():
+    pass
 
 #
 def create_imagemap():
+    pass
 
 #AITalkを使って、textから音声ファイルを作成
 def create_audio(text):
+    pass
 
 
 #幹事さんがグループを作成後、メンバーを追加し、botへ招待(botがbotのurlをグループへ発信)
 #各メンバーはbotのurlをクリックして、botを追加
 def create_url_bot():
+    pass
 
 
 #要る?
 def create_url_group(group_id):
-
+    pass
