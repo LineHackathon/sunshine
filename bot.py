@@ -56,28 +56,30 @@ def print_profile(user_id):
     except linebot.LineBotApiError as e:
         print_error(e)
 
-def get_name(user_id):
-    # print_profile(event.source.user_id)
-    if(user_id in uname_dict):
-        name = uname_dict[user_id]
+def get_name(uid):
+    # print_profile(event.source.uid)
+    if(uid in uname_dict):
+        name = uname_dict[uid]
     else:
-        name =line_bot_api.get_profile(user_id).display_name
-        uname_dict[user_id] = name
-        uid_dict[name] = user_id
+        name = line_bot_api.get_profile(uid).display_name
+        uname_dict[uid] = name
+        uid_dict[name] = uid
     return name
+
+
+@handler.add(FollowEvent)
+def handle_follow_message(event):
+    msg = u'グループIDを入力してください'
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=msg))
 
 
 @handler.add(JoinEvent)
 def handle_join_message(event):
     # print(event)
     # msg = u'空前絶後のぉ〜〜〜〜〜〜'
-    if(event.source.type == 'user'):
-        msg = u'グループIDを入力してください'
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=msg))
-
-    elif(event.source.type == 'group'):
+    if(event.source.type == 'group'):
         # group_id_temp = event.source.group_id
         msg = \
             u'次のURLからお友達に追加してください\n' \
@@ -126,7 +128,15 @@ def handle_text_message(event):
         print(event.message.text)
 
         if(event.message.text == warikan.group_id):
-            warikan.add_user(name)
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text='割り勘システムに登録しました'))
+            warikan.add_user(uid)
+            msg = name + u'さんが友達登録しました'
+            line_bot_api.push_message(
+                warikan.group_id,
+                TextSendMessage(text=msg))
+
 
         elif(event.message.text.isdigit()):
             amount = int(event.message.text)
@@ -134,9 +144,9 @@ def handle_text_message(event):
             line_bot_api.push_message(
                 warikan.group_id,
                 TextSendMessage(text=msg))
-            warikan.add_amount(name, amount)
+            warikan.add_amount(uid, amount)
 
-            msg = name + u'さんは合計' + str(warikan.amount_dict[name]) + u'円支払いました'
+            msg = name + u'さんは合計' + str(warikan.amount_dict[uid]) + u'円支払いました'
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=msg))
@@ -151,9 +161,9 @@ def handle_text_message(event):
         elif(event.message.text == u'確認'):
             msg = ''
             total = 0
-            for p in warikan.amount_dict:
-            # for p in amount_dict:
-                msg += p + u'さんが' + str(warikan.amount_dict[p]) + u'円支払いました\n'
+            for uid in warikan.amount_dict:
+            # for uid in amount_dict:
+                msg += get_name(uid) + u'さんが' + str(warikan.amount_dict[uid]) + u'円支払いました\n'
             # ave = total / len(amount_dict)
             ave = warikan.get_average()
             msg += u'一人あたり' + str(ave) + u'円です'
@@ -236,17 +246,29 @@ def start_warikan():
     payment_dict = warikan.calc_warikan()
     print(payment_dict)
 
-    msg = ''
-    for name in payment_dict:
-        for pay in payment_dict[name]:
-            msg += name + u'さんは' + pay + u'さんに' \
-                + u'{:,d}'.format(payment_dict[name][pay]) \
-                + u'円払ってください\n'
-            # print(msg)
-                # + str(payment_dict[name][pay]) \
+    grpmsg = ''
+    for uid in payment_dict:
+        pmsg = ''
+        for pay in payment_dict[uid]:
+            grpmsg += get_name(uid) + u'さんは' + get_name(pay) + u'さん'
+            pmsg += get_name(pay) + u'さん'
+            if(payment_dict[uid][pay] < 0):
+                msg = u'に{:,d}円払ってください\n'.format(-payment_dict[uid][pay])
+            else:
+                msg = u'から{:,d}円受け取ってください\n'.format(payment_dict[uid][pay])
+            grpmsg += msg
+            pmsg += msg
+
+        line_bot_api.push_message(
+            uid,
+            TextSendMessage(text=pmsg))
+
+
+    if(grpmsg == ''):
+        grpmsg = '精算はありません'
     line_bot_api.push_message(
         warikan.group_id,
-        TextSendMessage(text=msg))
+        TextSendMessage(text=grpmsg))
 
 @handler.add(PostbackEvent)
 def handle_postback_message(event):
