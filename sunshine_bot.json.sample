@@ -1,0 +1,5 @@
+{
+	"token": "<token>",
+	"secret": "<secret>",
+	"base_url": "https://5cd0e5b0.ngrok.io"
+}
