@@ -1,5 +1,7 @@
 {
-	"token": "<token>",
-	"secret": "<secret>",
-	"base_url": "https://5cd0e5b0.ngrok.io"
+	"token": "<token for messenger api>",
+	"secret": "<secret for messenger api>",
+	"base_url": "https://example.com",
+	"login_channel_id": "<id for login>",
+	"login_secret": "<secret for login>"
 }
