@@ -5,35 +5,64 @@ import re
 import requests
 import urllib
 import os
+import sys
+import traceback
+
 from flask import Flask, request, abort, send_from_directory
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import *
-from tinydb import TinyDB, Query
 
-import warikan
+# import database as db
 
 app = Flask(__name__)
 
-# for LINE Messageing API
-f = open('sunshine_bot.json', 'r')
-json_dict = json.load(f)
-f.close
-line_bot_api = LineBotApi(json_dict['token'])
-handler = WebhookHandler(json_dict['secret'])
-base_url = json_dict['base_url']
+# 環境変数が見つかればそっちを読む
+# 見つからなければjsonファイルを読む
+# なければエラー終了
+try:
+    # 環境変数読み込み
+    line_messaging_api_token = os.environ['LINE_MESSAGING_API_TOKEN']
+    line_messaging_api_secret = os.environ['LINE_MESSAGING_API_SECRET']
+    line_login_channel_id = os.environ['LINE_LOGIN_CHANNEL_ID']
+    line_login_secret = os.environ['LINE_LOGIN_SECRET']
+    base_url = os.environ['CHECKUN_BASE_URL']
+    print('os.envrion')
 
-# for LINE Login
-# auth_url = 'https://068265ed.ngrok.io/auth'
+except:
+    try:
+        # load from json
+        f = open('checkun.json', 'r')
+        json_dict = json.load(f)
+        f.close
+
+        line_messaging_api_token = json_dict['LINE_MESSAGING_API_TOKEN']
+        line_messaging_api_secret = json_dict['LINE_MESSAGING_API_SECRET']
+        line_login_channel_id = json_dict['LINE_LOGIN_CHANNEL_ID']
+        line_login_secret = json_dict['LINE_LOGIN_SECRET']
+        base_url = json_dict['CHECKUN_BASE_URL']
+        print('json')
+
+    except:
+        traceback.print_exc()
+        print(u'読み込みエラー')
+        sys.exit(-1)
+print(u'読み込み成功')
+
+# setup LINE Messaging API
+line_bot_api = LineBotApi(line_messaging_api_token)
+handler = WebhookHandler(line_messaging_api_secret)
+
+# setup LINE Login API
 auth_url = base_url + '/auth'
-login_channel_id = json_dict['login_channel_id']
-login_secret = json_dict['login_secret']
 
-friendsdb = TinyDB('friendsdb.json')
-userdb = TinyDB('userdb.json')
-warikandb = TinyDB('warikandb.json')
+cmd_prefix = u'▶'
 
-# print(base_url)
+# setup database
+# db.init('checkundb.json')
+udb = {}
+
+# sys.exit(0)
 
 def line_login_get_access_token(code):
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
@@ -76,8 +105,8 @@ def get_commad_number_str(number):
 
 @app.route('/images/<title>/<width>', methods=['GET'])
 def images(title, width):
-    print(title)
-    print(width)
+    # print(title)
+    # print(width)
     # 1040, 700, 460, 300, 240
     return send_from_directory(os.path.join(app.root_path, 'static/imagemap', title),
                                str(width) + '.png', mimetype='image/png')
@@ -126,7 +155,7 @@ def callback():
     app.logger.info("Request body: " + body)
 
     f = open('log.txt','a')
-    f.write(json.dumps(json.loads(body)))
+    f.write(json.dumps(json.loads(body), indent=2, sort_keys=True, separators=(',', ': ')))
     f.write('\n')
     f.close
 
@@ -152,404 +181,1224 @@ def print_error(e):
     print(e.error.message)
     print(e.error.details)
 
-def print_profile(uid):
-    try:
-        profile = line_bot_api.get_profile(uid)
-        print(profile.display_name)
-        print(profile.user_id)
-        print(profile.picture_url)
-        print(profile.status_message)
-        return profile
-    except LineBotApiError as e:
-        print_error(e)
-
-def get_name(uid):
-    add_userdb(uid)
-    return userdb.search(Query().id == uid)[0].get('name')
-
-def add_user_warikan_group(uid, wgid):
-    for udata in userdb.search(Query().id == uid):
-        if(wgid not in udata.get('groups')):
-            udata['groups'].append(wgid)
-            userdb.update({'groups': udata['groups']}, Query().id == uid)
-
-            line_bot_api.push_message(uid, TextSendMessage(text=wgid + u'に入りました'))
-        else:
-            line_bot_api.push_message(uid, TextSendMessage(text=u'すでに' + wgid + u'のメンバーだよ'))
-
-    for wdata in warikandb.search(Query().id == wgid):
-        if(uid not in wdata.get('users')):
-            wdata['users'].append(uid)
-            wdata.get('amounts')[uid] = 0
-            wdata.get('additional')[uid] = 0
-            wdata.get('rates')[uid] = 1.0
-            warikandb.update({
-                'users': wdata['users'],
-                'amounts': wdata['amounts'],
-                'additional': wdata['additional'],
-                'rates': wdata['rates']},
-                Query().id == wgid
-            )
-            pushid = wgid.split(':',1)[1]
-            line_bot_api.push_message(pushid, TextSendMessage(text=get_name(uid) + u'が清算グループに入りました'))
-
-    # print 'user(' + uid + ') is join to gid(' + wgid + ')'
-    # print udata[0]
-    # print wdata[0]
-
-def get_wgid(source):
-    if(source.type == 'group'):
-        return 'group:' + source.group_id
-    elif(source.type == 'room'):
-        return 'room:' + source.room_id
-
-def add_warikan_group(source):
-    wgid = get_wgid(source)
-
-    warikandb.insert({'id': wgid, 'name': wgid, 'users': [], 'amounts': {}, 'additional': {}, 'rates': {}})
-
-def del_warikan_group(source):
-    wgid = get_wgid(source)
-
-    # グループメンバのデータベース更新
-    for wdata in warikandb.search(Query().id == wgid):
-        for uid in wdata.get('users'):
-            for udata in userdb.search(Query().id == uid):
-                if(wgid in udata['groups']):
-                    udata['groups'].remove(wgid)
-                    userdb.update({'groups': udata['groups']}, Query().id == uid)
-
-    warikandb.remove(Query().id == wgid)
-
-    del_friendsdb(source)
-
-def add_friendsdb(source):
-    if(source.type == 'user'):
-        if(len(friendsdb.table('users').search(Query().id == source.user_id)) == 0):
-            friendsdb.table('users').insert({'id': source.user_id})
-        add_userdb(source.user_id)
-
-    elif(source.type == 'group'):
-        if(len(friendsdb.table('groups').search(Query().id == source.group_id)) == 0):
-            friendsdb.table('groups').insert({'id': source.group_id})
-
-    elif(source.type == 'room'):
-        if(len(friendsdb.table('rooms').search(Query().id == source.room_id)) == 0):
-            friendsdb.table('rooms').insert({'id': source.room_id})
-
-def del_friendsdb(source):
-    if(source.type == 'user'):
-        friendsdb.table('users').remove(Query().id == source.user_id)
-        del_userdb(source.user_id)
-    elif(source.type == 'group'):
-        friendsdb.table('groups').remove(Query().id == source.group_id)
-    elif(source.type == 'room'):
-        friendsdb.table('rooms').remove(Query().id == source.room_id)
-
-def add_userdb(uid):
-    if(len(userdb.search(Query().id == uid)) == 0):
-        profile = line_bot_api.get_profile(uid)
-        userdb.insert({'id': uid, 'name': profile.display_name, 'pict': profile.picture_url, 'status': profile.status_message, 'follow': True, 'groups': []})
-    else:
-        userdb.update({'follow': True}, Query().id == uid)
-
-def del_userdb(uid):
-    if(len(userdb.search(Query().id == uid)) == 0):
-        profile = line_bot_api.get_profile(uid)
-        userdb.insert({'id': uid, 'name': profile.display_name, 'pict': profile.picture_url, 'status': profile.status_message, 'follow': False, 'groups': []})
-    else:
-        userdb.update({'follow': False}, Query().id == uid)
-
-def get_template_msg():
-    confirm_template_message = TemplateSendMessage(
-        alt_text='Confirm Checkout',
-        template=ConfirmTemplate(
-            text=u'精算を開始しますか？',
-            actions=[
-                PostbackTemplateAction(
-                    label='OK',
-                    text='精算をお願いします',
-                    data=json.dumps({'cmd': 'start_checkout'})
-                ),
-                PostbackTemplateAction(
-                    label='cancel',
-                    text='精算を中止してください',
-                    data=json.dumps({'cmd': 'cancel_checkout'})
-                ),
-            ]
-        )
-    )
-    return confirm_template_message
-
 @handler.default()
 def default(event):
-    add_friendsdb(event.source)
-    print(event)
+    pass
+
+def get_commad_number_str(number):
+    return(u'{:,d}'.format(number))
+
+def get_id(source):
+    if source.type == 'user':
+        return source.user_id
+    elif source.type == 'group':
+        return source.group_id
+    elif source.type == 'room':
+        return source.room_id
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
-    add_friendsdb(event.source)
+    id = get_id(event.source)
+    reply_msgs = []
+    #コマンド受信
+    if(event.message.text[0] == cmd_prefix):
+        print('command received')
+        cmd = event.message.text[1:]
 
-    # テキストを分割
-    # http://ymotongpoo.hatenablog.com/entry/20110425/1303724503
-    msg_list = re.compile(u"\s+", re.UNICODE).split(event.message.text)
-    print msg_list
+        if cmd == u'支払登録':
+            reply_msgs.append(TextSendMessage(text = u'何か支払ったんだね'))
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'支払登録ボタン',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url='https://example.com/image.jpg',
+                    title=u'支払登録',
+                    text=u'リストから選んでね',
+                    actions=[
+                        # PostbackTemplateAction(
+                        MessageTemplateAction(
+                            label=u'金額入力で登録',
+                            text=cmd_prefix + u'支払登録（金額入力）',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                            label=u'電卓入力で登録',
+                            text=cmd_prefix + u'支払登録（電卓入力）',
+                            # data='action=buy&itemid=1'
+                        ),
+                        # PostbackTemplateAction(
+                        MessageTemplateAction(
+                            label=u'レシートで登録',
+                            text=cmd_prefix + u'支払登録（レシート）',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'支払登録（金額入力）':
+            udb[id] = {'status': 'input_amount'}
+            reply_msgs.append(TextSendMessage(text = u'金額を入力してね(1~999,999)'))
+        elif cmd == u'支払登録（電卓入力）':
+            udb[id] = {}
+            udb[id]['amount'] = 0
 
-    if(event.message.text == u'裏メニュー'):
-        msg = TemplateSendMessage(
-            alt_text='Buttons template',
-            template=ButtonsTemplate(
-                # thumbnail_image_url='https://example.com/image.jpg',
-                title=u'裏メニュー',
-                text='何する？',
-                actions=[
-                    PostbackTemplateAction(
-                        label='ユーザDB参照',
-                        text='user list',
-                        data=json.dumps({'cmd': None})
-                    ),
-                    PostbackTemplateAction(
-                        label='友達DB参照',
-                        text='friend list',
-                        data=json.dumps({'cmd': None})
-                    ),
-                    PostbackTemplateAction(
-                        label='割り勘DB参照',
-                        text='warikan list',
-                        data=json.dumps({'cmd': None})
-                    )
-                ]
-            )
-        )
-        line_bot_api.reply_message(event.reply_token, msg)
-        pass
+            actions=[]
+            calc_buttonid = ['7', '8', '9', 'C', '4', '5', '6', 'C', '1', '2', '3', 'E', '0', '00', '000', 'E']
+            button_size = 260
+            for y in range(4):
+                for x in range(4):
+                    actions.append(MessageImagemapAction(text=cmd_prefix + u'電卓' + calc_buttonid[x+y*4], area=ImagemapArea(x=x*button_size, y=y*button_size, width=button_size, height=button_size)))
 
-    elif(event.message.text == 'warikan list'):
-        group_list = warikandb.all()
-        msg = u'現在の割り勘リストは\n'
-        for group in group_list:
-            msg += 'group: ' + group.get('id') + '\n'
-            for user in group.get('users'):
-                msg += ' user: ' + get_name(user) + '\n'
-                msg += '  amounts: ' + str(group.get('amounts',{}).get(user,'')) + '\n'
-                msg += '  additional: ' + str(group.get('additional',{}).get(user,'')) + '\n'
-                msg += '  rate: ' + str(group.get('rates',{}).get(user,'')) + '\n'
-        msg = msg[:-1]
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text = msg))
-        return
-        pass
-    elif(event.message.text == 'user list'):
-        user_list = userdb.all()
-        msg = u'現在のユーザリストは\n'
-        for user in user_list:
-            msg += 'name: ' + user['name'] + '\n'
-            if user.has_key('pict'):
-                msg += ' pict: ' + str(user['pict']) + '\n'
-            if user.has_key('status'):
-                msg += ' status: ' + unicode(user.get('status', '')) + '\n'
-        msg = msg[:-1]
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text = msg))
-        return
-        pass
+            reply_msgs.append(ImagemapSendMessage(
+                base_url=base_url + '/images/CalcButtonT',
+                alt_text='電卓入力ボタン',
+                base_size=BaseSize(height=1040, width=1040),
+                actions=actions
+            ))
+        elif cmd[0:2] == u'電卓':
+            if len(cmd[2:]) == 1:
+                if cmd[2] == 'E':
+                    pass
+                elif cmd[2] == 'C':
+                    udb[id]['amount'] = 0
+                else:
+                    n = int(cmd[2])
+                    udb[id]['amount'] = udb[id]['amount'] * 10 + n
 
-    elif(event.message.text == 'friend list'):
-        friends_list = friendsdb.all()
-        msg = u'現在の友達リストは\n'
-        msg += str(friendsdb.table('users').all()) + '\n'
-        msg += str(friendsdb.table('groups').all()) + '\n'
-        msg += str(friendsdb.table('rooms').all()) + '\n'
-        msg = msg[:-1]
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text = msg))
-        return
-        pass
+            elif len(cmd[2:]) == 2:
+                udb[id]['amount'] = udb[id]['amount'] * 100
+            elif len(cmd[2:]) == 3:
+                udb[id]['amount'] = udb[id]['amount'] * 1000
 
-    elif(event.message.text == 'seisan'):
-        amounts = {
-            'A': 9800,
-            'B': 7600,
-            'C': 7400,
-            'D': 17600,
-            'E': 0,
-            'F': 0,
-            'G': 0,
-            'H': 0,
-            'I': 7,
-        }
-        transfer_list = warikan.calc_warikan(amounts)
-        msg = ''
-        for transfer in transfer_list:
-            msg += transfer.get('from') + u'⇒' + transfer.get('to') + ': ' + get_commad_number_str(transfer.get('amount')) + u'円\n'
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text = msg))
-        return
+            actions=[]
+            calc_buttonid = ['7', '8', '9', 'C', '4', '5', '6', 'C', '1', '2', '3', 'E', '0', '00', '000', 'E']
+            button_size = 260
+            for y in range(4):
+                for x in range(4):
+                    actions.append(MessageImagemapAction(text=cmd_prefix + u'電卓' + calc_buttonid[x+y*4], area=ImagemapArea(x=x*button_size, y=y*button_size, width=button_size, height=button_size)))
 
-    elif(msg_list[0] == u'グループ名'):
-        if(len(msg_list) == 1):
-            msg = u'現在のグループ名は' + u'未実装'
+            if cmd[2] == 'E':
+                udb[id]['status'] = 'input_use'
+                reply_msgs.append(TextSendMessage(text = u'{amount}円だね\n何の金額か教えて(ex.レンタカー代)'.format(amount=get_commad_number_str(udb[id]['amount']))))
+            else:
+                reply_msgs.append(ImagemapSendMessage(
+                    base_url=base_url + '/images/CalcButtonT',
+                    alt_text='電卓入力ボタン',
+                    base_size=BaseSize(height=1040, width=1040),
+                    actions=actions
+                ))
+                reply_msgs.append(TextSendMessage(text = u'{amount}円 これで良ければEnterボタンを押してね'.format(amount=get_commad_number_str(udb[id]['amount']))))
+
+        elif cmd == u'支払登録（レシート）':
+            udb[id] = {'status': 'input_amount'}
+            # reply_msgs.append(TextSendMessage(text = u'レシートを撮るか、写真を選択してね'))
+            reply_msgs.append(TextSendMessage(text = u'まだ実装していません'))
+        elif cmd == u'確認':
+            # reply_msgs.append(TextSendMessage(text = u'何の確認をするかリストから選んでね'))
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'確認ボタン',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url='https://example.com/image.jpg',
+                    title=u'確認',
+                    text=u'何の確認をするかリストから選んでね',
+                    actions=[
+                        # PostbackTemplateAction(
+                        MessageTemplateAction(
+                            label=u'支払メンバー確認',
+                            text=cmd_prefix + u'支払メンバー確認',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                            label=u'個別支払合計',
+                            text=cmd_prefix + u'個別支払合計',
+                            # data='action=buy&itemid=1'
+                        ),
+                        # PostbackTemplateAction(
+                        MessageTemplateAction(
+                            label=u'支払一覧',
+                            text=cmd_prefix + u'支払一覧',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'支払メンバー確認':
+            text = u'''現在この精算グループには『精算対象人数』人の方が対
+象になっています
+『対象ユーザ』さん
+『対象ユーザ』さん
+・
+・
+・
+『対象ユーザ』さん
+『対象ユーザ』さん
+会計係さん'''
+            reply_msgs.append(TextSendMessage(text = text))
+        elif cmd == u'個別支払合計':
+            text = u'''現時点の各個人の支払い合計を報告します。
+『対象ユーザ』さんが『合計金額』を支払いました ・
+・(※支払いが0円の人は表示対象にしない)
+・ 『対象ユーザ』さんが『合計金額』を支払いました
+『精算対象人数』人だと、一人あたり『平均合計金額』
+です'''
+            reply_msgs.append(TextSendMessage(text = text))
+        elif cmd == u'支払一覧':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text='支払一覧',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'支払一覧',
+                    text = u'リストの登録金額を選択すると詳細を表示するよ。表示は新しいものから表示しています。',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『支払金額』(『支払対象人数』)',
+                            text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『支払金額』(『支払対象人数』)',
+                            text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『支払金額』(『支払対象人数』)',
+                            text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『支払金額』(『支払対象人数』)',
+                            text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'『支払金額』(『支払対象人数』)':
+            text = u'''『対象ユーザ』さんが『項目名』で『支払金額』円支払
+いました。
+この支払いに対する支払対象者は『支払対象人数』名で
+す。
+『対象ユーザ』さん
+『対象ユーザ』さん
+・
+・
+・
+『対象ユーザ』さん
+『対象ユーザ』さん
+会計係さん'''
+            reply_msgs.append(TextSendMessage(text = text))
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'支払一覧ボタン',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'支払一覧',
+                    text = u'リストの登録金額を選択すると詳細を表示するよ。表示は新しいものから表示しています。',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'何もしない',
+                            text=cmd_prefix + u'何もしない',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'支払対象変更',
+                            text=cmd_prefix + u'支払対象変更',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'内容訂正',
+                            text=cmd_prefix + u'内容訂正',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'支払削除',
+                            text=cmd_prefix + u'支払削除',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'何もしない':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'何もしないボタン',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    # title=u'支払一覧に戻りますか?',
+                    text=u'支払一覧に戻りますか?',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'戻る',
+                            text=cmd_prefix + u'支払一覧',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'終了する',
+                            text=cmd_prefix + u'終了する',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'終了する':
+            reply_msgs.append(TextSendMessage(text = u'支払一覧確認を終了しました'))
+
+        elif cmd == u'支払対象変更':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'支払対象変更ボタン',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'支払対象変更?',
+                    text = u'行いたい操作をリストから選んでください。',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'1名だけにする',
+                            text=cmd_prefix + u'1名だけにする',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'1名減らす',
+                            text=cmd_prefix + u'1名減らす',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'1名増やす',
+                            text=cmd_prefix + u'1名増やす',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'全員対象にする',
+                            text=cmd_prefix + u'全員対象にする',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'1名だけにする':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'1名だけにするボタン',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'特定支払',
+                    text = u'支払対象となるユーザーをリストから選んでください。',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'特定支払『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'特定支払『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'特定支払『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'キャンセル',
+                            text=cmd_prefix + u'キャンセル',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'特定支払『対象ユーザ』さん':
+            reply_msgs.append(TextSendMessage(text = u'支払対象者を『対象ユーザ』さんに設定しました'))
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'支払一覧に戻りますか?',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    # title=u'支払一覧に戻りますか?',
+                    text = u'支払一覧に戻りますか?',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'戻る',
+                            text=cmd_prefix + u'支払一覧',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'終了する',
+                            text=cmd_prefix + u'終了する',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'1名減らす':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'支払対象除外',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'支払対象除外',
+                    text = u'支払対象から除外するユーザーをリストから選んでください。',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'キャンセル',
+                            text=cmd_prefix + u'キャンセル',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'1名増やす':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'支払対象追加',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'支払対象追加',
+                    text = u'支払対象に追加するユーザーをリストから選んでください',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'キャンセル',
+                            text=cmd_prefix + u'キャンセル',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'全員対象にする':
+            reply_msgs.append(TextSendMessage(text = u'全てのユーザを支払対象に設定しました'))
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'支払一覧に戻りますか?',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    # title=u'支払一覧に戻りますか?',
+                    text = u'支払一覧に戻りますか?',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'戻る',
+                            text=cmd_prefix + u'支払一覧',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'終了する',
+                            text=cmd_prefix + u'終了する',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+
+        elif cmd == u'内容訂正':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'支払訂正ボタン',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url='https://example.com/image.jpg',
+                    title=u'支払訂正',
+                    text=u'訂正する項目をリストから選んでね',
+                    actions=[
+                        # PostbackTemplateAction(
+                        MessageTemplateAction(
+                            label=u'金額',
+                            text=cmd_prefix + u'支払訂正金額',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                            label=u'支払項目',
+                            text=cmd_prefix + u'支払訂正項目',
+                            # data='action=buy&itemid=1'
+                        ),
+                        # PostbackTemplateAction(
+                        MessageTemplateAction(
+                            label=u'写真',
+                            text=cmd_prefix + u'支払訂正写真',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'支払削除':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'支払削除ボタン',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url='https://example.com/image.jpg',
+                    # title=u'支払削除',
+                    text=u'この支払を削除してもよいですか？',
+                    actions=[
+                        # PostbackTemplateAction(
+                        MessageTemplateAction(
+                            label=u'削除',
+                            text=cmd_prefix + u'支払削除実行',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                            label=u'中止',
+                            text=cmd_prefix + u'中止',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'支払削除実行':
+            reply_msgs.append(TextSendMessage(text = u'支払を削除しました'))
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'支払一覧に戻りますか?',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    # title=u'支払一覧に戻りますか?',
+                    text = u'支払一覧に戻りますか?',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'戻る',
+                            text=cmd_prefix + u'支払一覧',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'終了する',
+                            text=cmd_prefix + u'終了する',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'中止':
+            reply_msgs.append(TextSendMessage(text = u'削除操作を中止しました'))
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'支払一覧に戻りますか?',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    # title=u'支払一覧に戻りますか?',
+                    text = u'支払一覧に戻りますか?',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'戻る',
+                            text=cmd_prefix + u'支払一覧',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'終了する',
+                            text=cmd_prefix + u'終了する',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'清算':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'清算',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'清算',
+                    text = u'何の処理をするかリストから選んでね',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'精算実行・更新',
+                            text=cmd_prefix + u'精算実行・更新',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'精算報告',
+                            text=cmd_prefix + u'精算報告',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'精算結果確認',
+                            text=cmd_prefix + u'精算結果確認',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'精算実行・更新':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'精算実行・更新',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'精算実行・更新',
+                    text = u'新しい精算を開始します。よろしいですか?以前に実行した精算情報は全て消えてしまいます。',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'実行する',
+                            text=cmd_prefix + u'精算実行・更新実行',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'中止する',
+                            text=cmd_prefix + u'精算実行・更新中止',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'精算実行・更新実行':
+            reply_msgs.append(TextSendMessage(text = u'精算結果をグループラインに投稿しました'))
+            reply_msgs.append(TextSendMessage(text = u'''精算結果をお知らせします
+『対象ユーザ』さんに『未精算金額』円払ってください or『対象ユーザ』さんに『未精算金額』円もらってくだ さい
+支払が完了したら精算報告をしてください or 受取が完了したら精算報告をしてください'''))
+            # ここでグループに投稿
+
+        elif cmd == u'精算実行・更新中止':
+            reply_msgs.append(TextSendMessage(text = u'精算処理を中止しました'))
+
+        elif cmd == u'精算報告':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'精算報告',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'精算報告',
+                    text = u'『対象ユーザ』さんに『未精算金額』円払払いました か? or『対象ユーザ』さんに『未精算金額』円もらいました',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'完了した',
+                            text=cmd_prefix + u'精算完了',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'まだしてない',
+                            text=cmd_prefix + u'精算まだ',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+
+        elif cmd == u'精算完了':
+            reply_msgs.append(TextSendMessage(text = u'ありがとうございます!『対象ユーザ』さんに確認します!'))
+            reply_msgs.append(TextSendMessage(text = u'『対象ユーザ』さんに確認しました!あなたの精算は完了です！ or 『対象ユーザ』さんの確認が取れませんでした。再度精算をしてから報告してください。'))
+        elif cmd == u'精算まだ':
+            reply_msgs.append(TextSendMessage(text = u'早く払ってください!! or 早くもらってください!!'))
+
+        elif cmd == u'精算結果確認':
+            reply_msgs.append(TextSendMessage(text = u'''現在の精算結果をお知らせします
+【精算済】『対象ユーザ』さん →『対象ユーザ』さ
+ん:『未精算金額』円
+『対象ユーザ』さん →『対象ユーザ』さん:『未精算
+金額』円
+・
+・
+・
+【精算済】『対象ユーザ』さん →『対象ユーザ』さ
+ん:『未精算金額』円'''))
+
+        elif cmd == u'設定':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'設定',
+                template=CarouselTemplate(
+                    columns=[
+                        CarouselColumn(
+                            # thumbnail_image_url=base_url + '/static/car.jpg',
+                            title=u'精算設定',
+                            text=u'どれを操作するかリストから選んでね',
+                            actions=[
+                                MessageTemplateAction(
+                                    label=u'丸め設定',
+                                    text=cmd_prefix + u'丸め設定'
+                                ),
+                                MessageTemplateAction(
+                                    label=u'傾斜設定',
+                                    text=cmd_prefix + u'傾斜設定'
+                                ),
+                                MessageTemplateAction(
+                                    label=u'精算設定確認',
+                                    text=cmd_prefix + u'精算設定確認'
+                                ),
+                            ]
+                        ),
+                        CarouselColumn(
+                            # thumbnail_image_url=base_url + '/static/car.jpg',
+                            title=u'全般',
+                            text=u'どれを操作するかリストから選んでね',
+                            actions=[
+                                MessageTemplateAction(
+                                    label=u'会計係の設定',
+                                    text=cmd_prefix + u'会計係の設定'
+                                ),
+                                MessageTemplateAction(
+                                    label=u'初期化',
+                                    text=cmd_prefix + u'初期化'
+                                ),
+                                MessageTemplateAction(
+                                    label=u'改善要望・バグ報告',
+                                    text=cmd_prefix + u'改善要望・バグ報告'
+                                ),
+                            ]
+                        ),
+
+                    ]
+                )
+            ))
+
+        elif cmd == u'丸め設定':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'丸め設定',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'丸め設定',
+                    text = u'端数の丸め設定値を選択してください。',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'設定しない',
+                            text=cmd_prefix + u'丸め1',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'100円',
+                            text=cmd_prefix + u'丸め100',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'500円',
+                            text=cmd_prefix + u'丸め500',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'1,000円',
+                            text=cmd_prefix + u'丸め1000',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'丸め1':
+            reply_msgs.append(TextSendMessage(text = u'端数の丸め設定はしていません'))
+        elif cmd == u'丸め100':
+            reply_msgs.append(TextSendMessage(text = u'丸め設定値を100円にしました'))
+        elif cmd == u'丸め500':
+            reply_msgs.append(TextSendMessage(text = u'丸め設定値を500円にしました'))
+        elif cmd == u'丸め1000':
+            reply_msgs.append(TextSendMessage(text = u'丸め設定値を1,000円にしました'))
+
+        elif cmd == u'傾斜設定':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'傾斜種類選択',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'傾斜種類選択',
+                    text = u'設定をしたい傾斜の種類を選択してください',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'傾斜割合',
+                            text=cmd_prefix + u'傾斜割合',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'傾斜額',
+                            text=cmd_prefix + u'傾斜額',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'傾斜設定確認',
+                            text=cmd_prefix + u'傾斜設定確認',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        # elif cmd == u'傾斜割合':
+
+        elif cmd in [u'傾斜割合', u'傾斜額']:
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'傾斜対象選択',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'傾斜対象選択',
+                    text = u'傾斜設定をしたいユーザーを選択してください',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'全ユーザー初期化',
+                            text=cmd_prefix + u'全ユーザー初期化',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'傾斜設定『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'傾斜設定『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'『対象ユーザ』さん',
+                            text=cmd_prefix + u'傾斜設定『対象ユーザ』さん',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'全ユーザー初期化':
+            reply_msgs.append(TextSendMessage(text = u'全てのユーザーの傾斜(割合 or 額)をリセットしました'))
+
+        elif cmd == u'傾斜設定『対象ユーザ』さん':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'傾斜割合設定',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    title=u'傾斜割合設定',
+                    text = u'対象ユーザーの傾斜割合を設定してください',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'x 0.8',
+                            text=cmd_prefix + u'傾斜割合設定x0.8',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'x 1.0',
+                            text=cmd_prefix + u'傾斜割合設定x1.0',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'x 1.2',
+                            text=cmd_prefix + u'傾斜割合設定x1.2',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'その他',
+                            text=cmd_prefix + u'傾斜割合設定 その他',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'傾斜割合設定x0.8':
+            reply_msgs.append(TextSendMessage(text = u'『対象ユーザ』さんの傾斜割合を0.8に設定しました'))
+        elif cmd == u'傾斜割合設定x1.0':
+            reply_msgs.append(TextSendMessage(text = u'『対象ユーザ』さんの傾斜割合を1.0に設定しました'))
+        elif cmd == u'傾斜割合設定x1.2':
+            reply_msgs.append(TextSendMessage(text = u'『対象ユーザ』さんの傾斜割合を1.2に設定しました'))
+        elif cmd == u'傾斜割合設定 その他':
+            reply_msgs.append(TextSendMessage(text = u'希望の割合を入力してください（ex. 1.5、0.7）'))
+            udb[id]['status'] = 'set_rate'
+
+        elif cmd == u'傾斜設定確認':
+            reply_msgs.append(TextSendMessage(text = u'''傾斜設定は以下のようになっています
+『対象ユーザ』さんに傾斜はありません
+『対象ユーザ』さんには+2,000円の傾斜があります
+・
+・
+・
+『対象ユーザ』さんには×0.8、-1,000円の傾斜があります'''))
+
+        elif cmd == u'精算設定確認':
+            reply_msgs.append(TextSendMessage(text = u'''精算設定は以下のようになっています
+
+丸め設定：『500』円
+
+『対象ユーザ』さんに傾斜はありません
+『対象ユーザ』さんには+2,000円の傾斜があります
+・
+・
+・
+『対象ユーザ』さんには×0.8、-1,000円の傾斜があります'''))
+
+
+        elif cmd == u'会計係の設定':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'会計係の設定',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    # title=u'会計係の設定',
+                    text = u'企業や団体の経費立替係を入れる場合に設定します。',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'設定する',
+                            text=cmd_prefix + u'会計係設定する',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'設定しない',
+                            text=cmd_prefix + u'会計係設定しない',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'会計係設定する':
+            reply_msgs.append(TextSendMessage(text = u'会計係設定しました'))
+        elif cmd == u'会計係設定しない':
+            reply_msgs.append(TextSendMessage(text = u'会計係設定を解除しました'))
+
+        elif cmd == u'初期化':
+            reply_msgs.append(TemplateSendMessage(
+                alt_text=u'初期化',
+                template=ButtonsTemplate(
+                    # thumbnail_image_url=udb[id].get('image_url', None),
+                    # title=u'初期化',
+                    text = u'全ての設定を初期化します。よろしいですか？',
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'はい',
+                            text=cmd_prefix + u'初期化する',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'いいえ',
+                            text=cmd_prefix + u'初期化しない',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+        elif cmd == u'初期化する':
+            reply_msgs.append(TextSendMessage(text = u'初期化しました'))
+        elif cmd == u'初期化しない':
+            reply_msgs.append(TextSendMessage(text = u'初期化を中止しました'))
+
+        elif cmd == u'改善要望・バグ報告':
+            reply_msgs.append(TextSendMessage(text = u'''以下のリンクからお問い合わせください
+
+（ヘルプとかのホームページリンク）
+http://www.checkun.com/'''))
+
+
+        elif cmd == u'ヘルプ':
+            reply_msgs.append(TextSendMessage(text = u'知りたいことを選んでね'))
         else:
-            msg = u'新しいグループ名は' + msg_list[1]
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text = msg))
-        return
+            reply_msgs.append(TextSendMessage(text = u'知らないコマンドだ'))
 
-    elif(msg_list[0] == u'QR'):
-        try:
-            img_msg = ImageSendMessage(
-                original_content_url=u'https://qr-official.line.me/M/lvTHsDPv_o.png',
-                preview_image_url=u'https://qr-official.line.me/M/lvTHsDPv_o.png'
-            )
-            line_bot_api.reply_message(
-                event.reply_token,
-                img_msg)
-        except LineBotApiError as e:
-            print_error(e)
-        return
-
-    if(event.source.type == 'user'):
-        uid = event.source.user_id
-
-        #入力が数字のみの時
-        if(event.message.text.isdigit()):
-            amount = int(event.message.text)
-            msg = get_commad_number_str(amount) + u'円の支払を記録しました\n'
-
-            for udata in userdb.search(Query().id == uid): #ユーザデータ
-                for wgid in udata.get('groups'): # 所属するグループ
-                    for wdata in warikandb.search(Query().id == wgid): # 割り勘データ
-                        wdata.get('amounts')[uid] += amount
-                        msg += get_name(uid) + u'さんは合計' + get_commad_number_str(wdata.get('amounts')[uid]) + u'円支払いました'
-                        warikandb.update({
-                            'amounts': wdata['amounts']},
-                            Query().id == wgid
-                        )
-
-                        #グループに送信
-                        grpmsg = get_name(uid) + u'さんが' + get_commad_number_str(amount) + u'円支払いました'
-                        pushid = wgid.split(':',1)[1]
-                        line_bot_api.push_message(pushid, TextSendMessage(text = grpmsg))
-
-                        #メンバーに送信
-                        pushids = []
-                        for member in wdata.get('users'):
-                            if(member != uid):
-                                pushids.append(member)
-                                # line_bot_api.push_message(member, TextSendMessage(text = grpmsg))
-                        try:
-                            line_bot_api.multicast(pushids, TextSendMessage(text = grpmsg))
-                        except LineBotApiError as e:
-                            print_error(e)
-
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text = msg))
-
-        elif(event.message.text == u'支払入力をはじめる'):
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=u'みなさんのために何か支払われたのですね。支払われた金額を入力してください'))
-            pass
-
-        elif(event.message.text == u'支払内容を確認する'):
-            msg = u'現時点の支払内容をご報告します\n'
-
-            for udata in userdb.search(Query().id == uid):
-                for wgid in udata.get('groups'):
-                    for wdata in warikandb.search(Query().id == wgid):
-                        total = 0
-                        msg += u'グループID: ' + wdata.get('name') + u'\n'
-                        for member in wdata.get('users'):
-                            amount = wdata.get('amounts').get(member)
-                            msg += get_name(member) + u'さんが' + get_commad_number_str(amount) + u'円支払いました\n'
-                            total += amount
-                        ave = total / len(wdata.get('users'))
-                        msg += u'一人あたり' + get_commad_number_str(ave) + u'円です\n'
-
-            #最後の改行を消す
-            msg = msg[:-1]
-
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=msg))
-
-        elif(event.message.text == u'精算をお願いします'):
-
-            # 所属するグループ全部の清算する問題あり
-            for udata in userdb.search(Query().id == uid): #ユーザデータ
-                for wgid in udata.get('groups'): #ユーザが所属するグループ
-                    msg = ''
-                    for wdata in warikandb.search(Query().id == wgid): #グループの割り勘データ
-                        # 支払データ作成
-                        amounts = wdata.get('amounts')
-
-                        # 割り勘計算
-                        transfer_list = warikan.calc_warikan(amounts)
-
-                        # メッセージ作成
-                        for transfer in transfer_list:
-                            msg += get_name(transfer.get('from')) + u' ⇒ ' + get_name(transfer.get('to')) + ': ' + get_commad_number_str(transfer.get('amount')) + u'円\n'
-
-                        if(msg == ''):
-                            msg = '支払はありません'
-                        else:
-                            #最後の改行を消す
-                            msg = u'清算金額をお知らせするね\n' + msg[:-1]
-
-                        line_bot_api.reply_message(event.reply_token, TextSendMessage(text = msg))
-
-                    # グループに送信
-                    pushid = wgid.split(':',1)[1]
-                    line_bot_api.push_message(pushid, TextSendMessage(text = msg))
-
-            # msg = u'一人あたり' + get_commad_number_str(warikan.get_average()) + u'円です'
-            # line_bot_api.reply_message(
-            #     event.reply_token,
-            #     TextSendMessage(text=msg))
-
-
-        elif(event.message.text == u'ヘルプ'):
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=u'申し訳ございません\n準備中です'))
-
-        else:
-            pass
-        pass
-
-    # group or room
     else:
-        if(event.message.text == u'バイバイ'):
-            del_warikan_group(event.source)
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=u'またね'))
-            if(event.source.type == 'group'):
-                line_bot_api.leave_group(event.source.group_id)
-            elif(event.source.type == 'room'):
-                line_bot_api.leave_room(event.source.room_id)
+        try:
+            status = udb[id]['status']
+        except:
+            status = 'none'
+        print status
 
-        elif(event.message.text == u'リンク'):
-            msg = 'https://line.me/R/ti/p/%40tem1536h'
-            img_msg = ImageSendMessage(
-                original_content_url='https://qr-official.line.me/M/lvTHsDPv_o.png',
-                preview_image_url='https://qr-official.line.me/M/lvTHsDPv_o.png'
-            )
+        if status == 'input_amount':
+            if event.message.text.isdigit():
+                amount = int(event.message.text)
+                if (amount < 1) | (amount > 999999):
+                    reply_msgs.append(TextSendMessage(text = u'入力できるのは1〜999,999円だよ'))
 
-            line_bot_api.reply_message(
-                event.reply_token,
-                [TextSendMessage(text=msg), img_msg])
+                else:
+                    udb[id]['status'] = 'input_use'
+                    udb[id]['amount'] = amount
+                    reply_msgs.append(TextSendMessage(text = u'何の金額か教えて(ex.レンタカー代)'))
 
-        elif(event.message.text == u'ボタン'):
-            wgid = get_wgid(event.source)
-            imagemap_message = ImagemapSendMessage(
-                base_url=base_url + '/images/LINELogin',
-                alt_text='LINE Login\nhttps://access.line.me/dialog/oauth/weblogin?response_type=code&client_id=1498580092&redirect_uri=https%3A%2F%2F068265ed.ngrok.io%2Fauth&state=' + wgid,
-                base_size=BaseSize(height=302, width=1040),
-                actions=[
-                    URIImagemapAction(
-                        link_uri='https://access.line.me/dialog/oauth/weblogin?response_type=code&client_id=1498580092&redirect_uri=https%3A%2F%2F068265ed.ngrok.io%2Fauth&state=' + wgid,
-                        area=ImagemapArea(x=0, y=0, width=1040, height=302)
-                    ),
-                ]
-            )
-            line_bot_api.reply_message(
-                event.reply_token,
-                imagemap_message)
+            else:
+                reply_msgs.append(TextSendMessage(text = u'入力できるのは1〜999,999円だよ'))
+
+        elif status == 'input_use':
+            udb[id]['use'] = event.message.text
+            reply_msgs.append(TemplateSendMessage(
+                alt_text='登録確認',
+                template=ButtonsTemplate(
+                    thumbnail_image_url=udb[id].get('image_url', None),
+                    # title=u'登録確認',
+                    text = u'{use}で{amount}円、これで登録してよいですか？'.format(use = udb[id]['use'], amount = get_commad_number_str(udb[id]['amount'])),
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'OK',
+                            text=u'OK',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'訂正する',
+                            text=u'訂正する',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+            udb[id]['status'] = 'ask_photo_addition'
+
+        elif status == 'ask_photo_addition':
+            if event.message.text == u'OK':
+                reply_msgs.append(TemplateSendMessage(
+                    alt_text='写真確認',
+                    template=ConfirmTemplate(
+                        text = u'この支払に対して一緒に写真も登録しますか？',
+                        actions=[
+                            MessageTemplateAction(
+                            # PostbackTemplateAction(
+                                label=u'はい',
+                                text=u'はい',
+                                # data='action=buy&itemid=1'
+                            ),
+                            MessageTemplateAction(
+                            # PostbackTemplateAction(
+                                label=u'いいえ',
+                                text=u'いいえ',
+                                # data='action=buy&itemid=1'
+                            ),
+                        ]
+                    )
+                ))
+                udb[id]['status'] = 'confirm_photo_addition'
+
+            elif event.message.text == u'訂正する':
+                reply_msgs.append(TemplateSendMessage(
+                    alt_text=u'支払訂正ボタン',
+                    template=ButtonsTemplate(
+                        # thumbnail_image_url='https://example.com/image.jpg',
+                        title=u'支払訂正',
+                        text=u'訂正する項目をリストから選んでね',
+                        actions=[
+                            # PostbackTemplateAction(
+                            MessageTemplateAction(
+                                label=u'金額',
+                                text=u'金額',
+                                # data='action=buy&itemid=1'
+                            ),
+                            MessageTemplateAction(
+                                label=u'支払項目',
+                                text=u'支払項目',
+                                # data='action=buy&itemid=1'
+                            ),
+                            # PostbackTemplateAction(
+                            MessageTemplateAction(
+                                label=u'写真',
+                                text=u'写真',
+                                # data='action=buy&itemid=1'
+                            ),
+                        ]
+                    )
+                ))
+                udb[id]['status'] = 'modify_payment'
+
+            else: #訂正する
+                reply_msgs.append(TextSendMessage(text = u'ボタンで選んでね'))
+
+        elif status == 'confirm_photo_addition':
+            if event.message.text == u'はい':
+                reply_msgs.append(TextSendMessage(text = u'写真を撮るか、写真を選択してね'))
+                udb[id]['status'] = 'add_photo'
+
+            elif event.message.text == u'いいえ':
+                reply_msgs.append(TextSendMessage(text = u'登録完了しました！この内容でみんなに報告しますね！'))
+                # ここでDB登録＆みんなに報告
+
+                del udb[id]
+            else:
+                reply_msgs.append(TextSendMessage(text = u'ボタンで選んでね'))
+
+        elif status == 'modify_payment':
+            if event.message.text == u'金額':
+                reply_msgs.append(TextSendMessage(text = u'金額を入力してね(1~999,999)'))
+                udb[id]['status'] = 'modify_amount'
+            if event.message.text == u'支払項目':
+                reply_msgs.append(TextSendMessage(text = u'何の金額か教えて(ex.レンタカー代)'))
+                udb[id]['status'] = 'modify_use'
+            if event.message.text == u'写真':
+                reply_msgs.append(TextSendMessage(text = u'写真を撮るか、写真を選択してね'))
+                udb[id]['status'] = 'modify_photo'
+
+        elif status == 'modify_amount':
+            if event.message.text.isdigit():
+                amount = int(event.message.text)
+                if (amount < 1) | (amount > 999999):
+                    reply_msgs.append(TextSendMessage(text = u'入力できるのは1〜999,999円だよ'))
+
+                else:
+                    # udb[id]['status'] = 'input_use'
+                    udb[id]['amount'] = amount
+                    reply_msgs.append(TemplateSendMessage(
+                        alt_text='登録確認',
+                        template=ButtonsTemplate(
+                            thumbnail_image_url=udb[id].get('image_url', None),
+                            # title=u'登録確認',
+                            text = u'{use}で{amount}円、これで登録してよいですか？'.format(use = udb[id]['use'], amount = get_commad_number_str(udb[id]['amount'])),
+                            actions=[
+                                MessageTemplateAction(
+                                # PostbackTemplateAction(
+                                    label=u'OK',
+                                    text=u'OK',
+                                    # data='action=buy&itemid=1'
+                                ),
+                                MessageTemplateAction(
+                                # PostbackTemplateAction(
+                                    label=u'訂正する',
+                                    text=u'訂正する',
+                                    # data='action=buy&itemid=1'
+                                ),
+                            ]
+                        )
+                    ))
+                    udb[id]['status'] = 'confirm_modify'
+
+            else:
+                reply_msgs.append(TextSendMessage(text = u'入力できるのは1〜999,999円だよ'))
+
+
+        elif status == 'modify_use':
+            udb[id]['use'] = event.message.text
+            reply_msgs.append(TemplateSendMessage(
+                alt_text='登録確認',
+                template=ButtonsTemplate(
+                    thumbnail_image_url=udb[id].get('image_url', None),
+                    # title=u'登録確認',
+                    text = u'{use}で{amount}円、これで登録してよいですか？'.format(use = udb[id]['use'], amount = get_commad_number_str(udb[id]['amount'])),
+                    actions=[
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'OK',
+                            text=u'OK',
+                            # data='action=buy&itemid=1'
+                        ),
+                        MessageTemplateAction(
+                        # PostbackTemplateAction(
+                            label=u'訂正する',
+                            text=u'訂正する',
+                            # data='action=buy&itemid=1'
+                        ),
+                    ]
+                )
+            ))
+            udb[id]['status'] = 'confirm_modify'
+
+        elif status == 'confirm_modify':
+            if event.message.text == u'OK':
+                reply_msgs.append(TextSendMessage(text = u'登録完了しました！この内容でみんなに報告しますね！'))
+                # ここでDB登録＆みんなに報告
+
+                del udb[id]
+            elif event.message.text == u'訂正する':
+                reply_msgs.append(TemplateSendMessage(
+                    alt_text=u'支払訂正ボタン',
+                    template=ButtonsTemplate(
+                        # thumbnail_image_url='https://example.com/image.jpg',
+                        title=u'支払訂正',
+                        text=u'訂正する項目をリストから選んでね',
+                        actions=[
+                            # PostbackTemplateAction(
+                            MessageTemplateAction(
+                                label=u'金額',
+                                text=u'金額',
+                                # data='action=buy&itemid=1'
+                            ),
+                            MessageTemplateAction(
+                                label=u'支払項目',
+                                text=u'支払項目',
+                                # data='action=buy&itemid=1'
+                            ),
+                            # PostbackTemplateAction(
+                            MessageTemplateAction(
+                                label=u'写真',
+                                text=u'写真',
+                                # data='action=buy&itemid=1'
+                            ),
+                        ]
+                    )
+                ))
+                udb[id]['status'] = 'modify_payment'
+
+            else:
+                reply_msgs.append(TextSendMessage(text = u'ボタンで選んでね'))
+
+        elif status in ['add_photo', 'modify_photo']:
+            reply_msgs.append(TextSendMessage(text = u'写真を撮るか、写真を選択してね'))
+
+        elif status == 'set_rate':
+            if event.message.text.isdigit():
+                rate = int(event.message.text)
+                if (rate < 1) | (rate > 99):
+                    reply_msgs.append(TextSendMessage(text = u'入力できるのは1〜99だよ'))
+
+                else:
+                    reply_msgs.append(TextSendMessage(text = u'『対象ユーザ』さんの傾斜割合を{rate}に設定しました'.format(rate=get_commad_number_str(rate))))
+
+            else:
+                reply_msgs.append(TextSendMessage(text = u'入力できるのは1〜99だよ'))
+
+
+    if len(reply_msgs) == 0:
+        reply_msgs.append(TextSendMessage(text = udb[id]['status']))
+
+    line_bot_api.reply_message(event.reply_token, reply_msgs)
 
 def save_content(message_id, filename):
     message_content = line_bot_api.get_message_content(message_id)
@@ -559,253 +1408,92 @@ def save_content(message_id, filename):
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
-    add_friendsdb(event.source)
-    # print(event)
-    if(event.source.type == 'user'):
-        uid = event.source.user_id
+    id = get_id(event.source)
+    reply_msgs = []
+
+    try:
+        status = udb[id]['status']
+    except:
+        status = 'none'
+    print status
+
+    if status in ['add_photo', 'modify_photo']:
+        udb[id]['image_url'] = base_url + '/static/' + event.message.id + '.jpg'
         save_content(event.message.id, 'static/' + event.message.id + '.jpg')
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=u'ありがとう\n画像をみんなにシェアするね'))
 
-        # 送信メッセージ
-        msgs = [
-            TextSendMessage(text=get_name(event.source.user_id) + u'が画像をシェアしてくれたよ'),
-            ImageSendMessage(
-                original_content_url=base_url + '/static/' + event.message.id + '.jpg',
-                preview_image_url=base_url + '/static/' + event.message.id + '.jpg'
+        reply_msgs.append(TemplateSendMessage(
+            alt_text='登録確認',
+            template=ButtonsTemplate(
+                thumbnail_image_url=udb[id].get('image_url', None),
+                # title=u'登録確認',
+                text = u'{use}で{amount}円、これで登録してよいですか？'.format(use = udb[id]['use'], amount = get_commad_number_str(udb[id]['amount'])),
+                actions=[
+                    MessageTemplateAction(
+                    # PostbackTemplateAction(
+                        label=u'OK',
+                        text=u'OK',
+                        # data='action=buy&itemid=1'
+                    ),
+                    MessageTemplateAction(
+                    # PostbackTemplateAction(
+                        label=u'訂正する',
+                        text=u'訂正する',
+                        # data='action=buy&itemid=1'
+                    ),
+                ]
             )
-        ]
-        for udata in userdb.search(Query().id == uid):
-            for wgid in udata.get('groups'):
-                #グループに送信
-                pushid = wgid.split(':',1)[1]
-                line_bot_api.push_message(pushid, msgs)
+        ))
+        udb[id]['status'] = 'confirm_modify'
 
-                for wdata in warikandb.search(Query().id == wgid):
-                    #メンバーに送信
-                    pushids = []
-                    for member in wdata.get('users'):
-                        if(member != uid):
-                            pushids.append(member)
-                            # line_bot_api.push_message(member, msgs)
-                    line_bot_api.multicast(pushids, msgs)
+    if len(reply_msgs) == 0:
+        reply_msgs.append(TextSendMessage(text = udb[id]['status']))
+
+    line_bot_api.reply_message(event.reply_token, reply_msgs)
 
 @handler.add(MessageEvent, message=VideoMessage)
 def handle_video_message(event):
-    add_friendsdb(event.source)
     pass
 
 @handler.add(MessageEvent, message=AudioMessage)
 def handle_audio_message(event):
-    add_friendsdb(event.source)
     pass
 
 @handler.add(MessageEvent, message=LocationMessage)
 def handle_location_message(event):
-    add_friendsdb(event.source)
     pass
 
 @handler.add(MessageEvent, message=StickerMessage)
 def handle_sticker_message(event):
-    add_friendsdb(event.source)
-
-    msgs = [TextSendMessage(text=u'スタンプを受け取りました')]
-    pid = event.message.package_id
-    sid = event.message.sticker_id
-    wgid = pid + '_' + sid
-
-    # 使えるスタンプのpackage_id
-    usable_pid = ["1", "2", "3", "4"]
-    if(pid in usable_pid):
-        msgs.append(StickerSendMessage(package_id = pid, sticker_id = sid))
-    else:
-        msgs.append(TextSendMessage(text=u'僕の持っていないスタンプだ\nスタンプIDは{0}だよ'.format(wgid)))
-
-    if(len(warikandb.search(Query().wgid == wgid)) == 0):
-        # msgs.append(TextSendMessage(text=u'このスタンプの清算グループはありません'))
-        msgs.append(TemplateSendMessage(
-            alt_text=u'ConfirmTemplate',
-            template=ConfirmTemplate(
-                text=u'このスタンプの清算グループはありません\n作りますか？',
-                actions=[
-                    PostbackTemplateAction(
-                        label='はい',
-                        text='はい',
-                        data=json.dumps({'cmd': 'create_wgid', 'wgid': wgid})
-                    ),
-                    PostbackTemplateAction(
-                        label='いいえ',
-                        text='いいえ',
-                        data=json.dumps({'cmd': None})
-                    ),
-                ]
-            )
-        ))
-        # if(event.source.type == 'user'):
-        #     uid = event.source.user_id
-        #     warikandb.insert({'wgid': wgid, 'name': wgid, 'users': [uid], 'groups': [], 'rooms': [], 'amounts': {uid: 0}, 'additional': {uid: 0}, 'rate': {uid: 1.0}})
-        # elif(event.source.type == 'group'):
-        #     warikandb.insert({'wgid': wgid, 'name': wgid, 'users': [], 'groups': [event.source.group_id], 'rooms': [], 'amounts': {}, 'additional': {}, 'rate': {}})
-        # elif(event.source.type == 'room'):
-        #     warikandb.insert({'wgid': wgid, 'name': wgid, 'users': [], 'groups': [], 'rooms': [event.source.room_id], 'amounts': {}, 'additional': {}, 'rate': {}})
-    else:
-        # msgs.append(TextSendMessage(text=u'このスタンプの清算グループはすでにあります'))
-        msgs.append(TemplateSendMessage(
-            alt_text='Buttons template',
-            template=ButtonsTemplate(
-                # thumbnail_image_url='https://example.com/image.jpg',
-                # title='Menu',
-                text='このスタンプの清算グループはすでにあります',
-                actions=[
-                    PostbackTemplateAction(
-                        label='加入する',
-                        text='加入する',
-                        data=json.dumps({'cmd': 'join_wgid', 'wgid': wgid})
-                    ),
-                    PostbackTemplateAction(
-                        label='削除する',
-                        text='削除する',
-                        data=json.dumps({'cmd': 'remove_wgid', 'wgid': wgid})
-                    ),
-                    PostbackTemplateAction(
-                        label='何もしない',
-                        text='何もしない',
-                        data=json.dumps({'cmd': None})
-                    ),
-                ]
-            )
-        ))
-        # warikandb.remove(Query().wgid == wgid)
-
-    line_bot_api.reply_message(event.reply_token, msgs)
+    pass
 
 @handler.add(FollowEvent)
 def handle_follow_message(event):
-    add_friendsdb(event.source)
-
-    msg = u'はじめまして、Checkunです。友達登録していただきありがとうございます。清算のやり取りをおこなうグループに私を招待して加入ボタンを押してください。'
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=msg))
+    pass
 
 @handler.add(UnfollowEvent)
 def handle_unfollow_message(event):
-    del_friendsdb(event.source)
+    pass
 
 
 @handler.add(JoinEvent)
 def handle_join_message(event):
-    add_friendsdb(event.source)
-
-    wgid = get_wgid(event.source)
-
-    msg1 = \
-        u'はじめまして、Checkunです。このグループの会計係をさせていただきます！\n' \
-        # u'まずは、このグループメンバー全員の方とお友達になりたいです。\n' \
-        # u'次のURLで友達になってね。\n' \
-        # u'グループのスタンプを決めて送ってね'
-        # u'左のボタンを押して私と友達になって、右のボタンで清算グループに入ってください！'
-
-    # msg2 = 'https://line.me/R/ti/p/%40tem1536h'
-
-    imagemap_message = ImagemapSendMessage(
-        base_url=base_url + '/images/LINELogin',
-        alt_text='this is an imagemap',
-        base_size=BaseSize(height=302, width=1040),
-        actions=[
-            URIImagemapAction(
-                link_uri='https://access.line.me/dialog/oauth/weblogin?response_type=code&client_id=1498580092&redirect_uri=https%3A%2F%2F068265ed.ngrok.io%2Fauth&state=' + wgid,
-                area=ImagemapArea(x=0, y=0, width=1040, height=302)
-            ),
-        ]
-    )
-
-    line_bot_api.reply_message(event.reply_token, [
-        TextSendMessage(msg1),
-        # TextSendMessage(msg2),
-        imagemap_message,
-    ])
-
-    add_warikan_group(event.source)
-
+    pass
 
 @handler.add(LeaveEvent)
 def handle_leave_message(event):
-    del_warikan_group(event.source)
+    pass
 
 
 @handler.add(PostbackEvent)
 def handle_postback_event(event):
-    add_friendsdb(event.source)
-
-    json_dict = json.loads(event.postback.data)
-    print(json_dict)
-
-    # print(event.postback.data)
-    # if(event.postback.data == u'start checkout'):
-    #     line_bot_api.reply_message(
-    #         event.reply_token,
-    #         TextSendMessage(text=u'精算を始めます'))
-    #
-    #     start_warikan()
-    #
-    # elif(event.postback.data == u'cancel checkout'):
-    #     line_bot_api.reply_message(
-    #         event.reply_token,
-    #         TextSendMessage(text=u'おっと、焦りは禁物ですよ\n精算を中止します'))
-    #     pass
+    pass
 
 
 @handler.add(BeaconEvent)
 def handle_beacon_event(event):
-    add_friendsdb(event.source)
     pass
-
-def start_warikan():
-    payment_dict = warikan.calc_warikan()
-    print(u'start_warikan')
-    print(payment_dict)
-
-    grpmsg = ''
-    for uid in payment_dict:
-        pmsg = ''
-        for pay in payment_dict[uid]:
-            grpmsg += get_name(uid) + u'さんは' + get_name(pay) + u'さん'
-            pmsg += get_name(pay) + u'さん'
-            if(payment_dict[uid][pay] < 0):
-                msg = u'に' + get_commad_number_str(-payment_dict[uid][pay]) + '円払ってください\n'
-            else:
-                msg = u'から' + get_commad_number_str(payment_dict[uid][pay]) + '円受け取ってください\n'
-            grpmsg += msg
-            pmsg += msg
-
-        line_bot_api.push_message(
-            uid,
-            TextSendMessage(text=pmsg))
-        # print(pmsg)
-
-
-    if(grpmsg == ''):
-        grpmsg = '精算はありません'
-    # line_bot_api.push_message(
-    #     warikan.group_id,
-    #     TextSendMessage(text=grpmsg))
-    # print(grpmsg)
-
-    # paypalリンク作成
-    # http://944ce050.ngrok.io/vault_sale?amount=xxx
-    # https://www.paypal.jp/jp/mms2/service/logos-buttons/images/CO_228_44.png
-    # for uid in payment_dict:
-    #     for pay in payment_dict[uid]:
-    #         if(payment_dict[uid][pay] < 0):
-    #             url = 'http://944ce050.ngrok.io/vault_sale?amount=' + str(-payment_dict[uid][pay])
-    #             print(url)
-    #             line_bot_api.push_message(
-    #                 uid,
-    #                 TextSendMessage(url))
-
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=5000)
+    # app.run(debug=True, port=5001)

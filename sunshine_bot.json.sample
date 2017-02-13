@@ -1,7 +1,0 @@
-{
-	"token": "<token for messenger api>",
-	"secret": "<secret for messenger api>",
-	"base_url": "https://example.com",
-	"login_channel_id": "<id for login>",
-	"login_secret": "<secret for login>"
-}
