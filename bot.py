@@ -13,7 +13,7 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import *
 
-# import database as db
+import database_mock as db
 
 app = Flask(__name__)
 
@@ -198,6 +198,10 @@ def get_id(source):
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
+    if event.source.type == 'user':
+        name = line_bot_api.get_profile(event.source.user_id).display_name
+        print name
+
     id = get_id(event.source)
     reply_msgs = []
     #コマンド受信
@@ -322,6 +326,10 @@ def handle_text_message(event):
                 )
             ))
         elif cmd == u'支払メンバー確認':
+            groups = db.get_user_groups(uid)
+            for group in groups:
+                pass
+
             text = u'''現在この精算グループには『精算対象人数』人の方が対
 象になっています
 『対象ユーザ』さん
@@ -334,6 +342,9 @@ def handle_text_message(event):
 会計係さん'''
             reply_msgs.append(TextSendMessage(text = text))
         elif cmd == u'個別支払合計':
+            payments = db.get_user_groups_payments(uid)
+            for payment in payments:
+                pass
             text = u'''現時点の各個人の支払い合計を報告します。
 『対象ユーザ』さんが『合計金額』を支払いました ・
 ・(※支払いが0円の人は表示対象にしない)
@@ -342,6 +353,9 @@ def handle_text_message(event):
 です'''
             reply_msgs.append(TextSendMessage(text = text))
         elif cmd == u'支払一覧':
+            payments = db.get_user_groups_payments(uid)
+            for payment in payments:
+                pass
             reply_msgs.append(TemplateSendMessage(
                 alt_text='支払一覧',
                 template=ButtonsTemplate(
@@ -521,6 +535,8 @@ def handle_text_message(event):
                 )
             ))
         elif cmd == u'特定支払『対象ユーザ』さん':
+            # db.set_debt_uid_list(gid, uid_list)
+            db.set_debt_uid_list('sample_gid', ['sample_user'])
             reply_msgs.append(TextSendMessage(text = u'支払対象者を『対象ユーザ』さんに設定しました'))
             reply_msgs.append(TemplateSendMessage(
                 alt_text=u'支払一覧に戻りますか?',
@@ -702,6 +718,7 @@ def handle_text_message(event):
                 )
             ))
         elif cmd == u'支払削除実行':
+            db.delete_payment(payment_id)
             reply_msgs.append(TextSendMessage(text = u'支払を削除しました'))
             reply_msgs.append(TemplateSendMessage(
                 alt_text=u'支払一覧に戻りますか?',
@@ -749,6 +766,16 @@ def handle_text_message(event):
                     ]
                 )
             ))
+        elif cmd == u'支払訂正金額':
+            # db.update_payment(amount, description, image)
+            db.update_payment(amout = 1000)
+            reply_msgs.append(TextSendMessage(text = u'省略'))
+        elif cmd == u'支払訂正項目':
+            db.update_payment(description = 'テスト')
+            reply_msgs.append(TextSendMessage(text = u'省略'))
+        elif cmd == u'支払訂正写真':
+            db.update_payment(image = 'https://example.com/image')
+            reply_msgs.append(TextSendMessage(text = u'省略'))
         elif cmd == u'清算':
             reply_msgs.append(TemplateSendMessage(
                 alt_text=u'清算',
