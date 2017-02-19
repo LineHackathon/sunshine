@@ -13,7 +13,9 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import *
 
-import database_mock as db
+# import database_mock as db
+import datastorage as db
+import warikan
 
 app = Flask(__name__)
 
@@ -24,6 +26,8 @@ try:
     # 環境変数読み込み
     line_messaging_api_token = os.environ['LINE_MESSAGING_API_TOKEN']
     line_messaging_api_secret = os.environ['LINE_MESSAGING_API_SECRET']
+    line_friend_url = os.environ['LINE_FRIEND_URL']
+    line_qr_url = os.environ['LINE_QR_URL']
     line_login_channel_id = os.environ['LINE_LOGIN_CHANNEL_ID']
     line_login_secret = os.environ['LINE_LOGIN_SECRET']
     base_url = os.environ['CHECKUN_BASE_URL']
@@ -32,12 +36,15 @@ try:
 except:
     try:
         # load from json
-        f = open('checkun.json', 'r')
+        # f = open('checkun_test.json', 'r')
+        f = open('checkun_dev.json', 'r')
         json_dict = json.load(f)
         f.close
 
         line_messaging_api_token = json_dict['LINE_MESSAGING_API_TOKEN']
         line_messaging_api_secret = json_dict['LINE_MESSAGING_API_SECRET']
+        line_friend_url = json_dict['LINE_FRIEND_URL']
+        line_qr_url = json_dict['LINE_QR_URL']
         line_login_channel_id = json_dict['LINE_LOGIN_CHANNEL_ID']
         line_login_secret = json_dict['LINE_LOGIN_SECRET']
         base_url = json_dict['CHECKUN_BASE_URL']
@@ -68,8 +75,8 @@ def line_login_get_access_token(code):
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
     payload = {
         'grant_type': 'authorization_code',
-        'client_id': login_channel_id,
-        'client_secret': login_secret,
+        'client_id': line_login_channel_id,
+        'client_secret': line_login_secret,
         'code': code,
         'redirect_uri': auth_url
         }
@@ -98,7 +105,7 @@ def line_login_get_user_profiles(token):
     # print r.json()
     # print r.url
 
-    return r.json().get('userId')
+    return r.json()
 
 def get_commad_number_str(number):
     return(u'{:,d}'.format(number))
@@ -139,9 +146,15 @@ def auth_callback():
     print 'Auth callback: ' + state + ', ' + code
 
     token = line_login_get_access_token(code)
-    uid = line_login_get_user_profiles(token)
+    profile = line_login_get_user_profiles(token)
+    uid = profile.get("userId")
+    name = profile.get("displayName")
 
-    add_user_warikan_group(uid, state)
+    # add_user_warikan_group(uid, state)
+    db.add_user_to_group(uid, state)
+    msgs = []
+    msgs.append(TextSendMessage(text = u'{}さんが清算グループに入りました'.format(name)))
+    line_bot_api.push_message(state, msgs)
 
     return 'Auth OK'
 
@@ -196,11 +209,13 @@ def get_id(source):
     elif source.type == 'room':
         return source.room_id
 
+def get_name(uid):
+    return line_bot_api.get_profile(uid).display_name
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
     if event.source.type == 'user':
-        name = line_bot_api.get_profile(event.source.user_id).display_name
-        print name
+        print get_name(event.source.user_id)
 
     id = get_id(event.source)
     reply_msgs = []
@@ -326,70 +341,91 @@ def handle_text_message(event):
                 )
             ))
         elif cmd == u'支払メンバー確認':
-            groups = db.get_user_groups(uid)
-            for group in groups:
-                pass
+            groups = db.get_user_groups(event.source.user_id)
+            for gid in groups:
+                users = db.get_group_users(gid)
+                text = u'現在この精算グループには{}人の方が対象になっています\n'.format(len(users))
+                for uid in users:
+                    text += (get_name(uid)) + u'さん\n'
 
-            text = u'''現在この精算グループには『精算対象人数』人の方が対
-象になっています
-『対象ユーザ』さん
-『対象ユーザ』さん
-・
-・
-・
-『対象ユーザ』さん
-『対象ユーザ』さん
-会計係さん'''
-            reply_msgs.append(TextSendMessage(text = text))
+            if len(text):
+                text = text[:-1]
+                reply_msgs.append(TextSendMessage(text = text))
+
         elif cmd == u'個別支払合計':
-            payments = db.get_user_groups_payments(uid)
-            for payment in payments:
-                pass
-            text = u'''現時点の各個人の支払い合計を報告します。
-『対象ユーザ』さんが『合計金額』を支払いました ・
-・(※支払いが0円の人は表示対象にしない)
-・ 『対象ユーザ』さんが『合計金額』を支払いました
-『精算対象人数』人だと、一人あたり『平均合計金額』
-です'''
+            text = u'現時点の各個人の支払い合計を報告します。\n'
+            groups = db.get_user_groups(event.source.user_id)
+            for gid in groups:
+                if len(groups) > 1:
+                    text += u'グループ：{}'.format(db.get_group_info(gid).get("name"))
+                payments = db.get_groups_payments(gid)
+                totals = {}
+                for payment in payments:
+                    uid = payment["payment_uid"]
+                    amount = payment["amount"]
+                    totals[uid] = totals.get(uid,0) + amount
+
+                total = 0
+                for k, v in totals.items():
+                    text += u'{}さんが{}円支払いました\n'.format(get_name(k), v)
+                    total += v
+
+                users = db.get_group_users(gid)
+                text += u'{}人だと、一人あたり{}円です'.format(len(users), total/len(users))
+
             reply_msgs.append(TextSendMessage(text = text))
         elif cmd == u'支払一覧':
-            payments = db.get_user_groups_payments(uid)
-            for payment in payments:
-                pass
-            reply_msgs.append(TemplateSendMessage(
-                alt_text='支払一覧',
-                template=ButtonsTemplate(
-                    # thumbnail_image_url=udb[id].get('image_url', None),
-                    title=u'支払一覧',
-                    text = u'リストの登録金額を選択すると詳細を表示するよ。表示は新しいものから表示しています。',
-                    actions=[
-                        MessageTemplateAction(
-                        # PostbackTemplateAction(
-                            label=u'『支払金額』(『支払対象人数』)',
-                            text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
-                            # data='action=buy&itemid=1'
-                        ),
-                        MessageTemplateAction(
-                        # PostbackTemplateAction(
-                            label=u'『支払金額』(『支払対象人数』)',
-                            text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
-                            # data='action=buy&itemid=1'
-                        ),
-                        MessageTemplateAction(
-                        # PostbackTemplateAction(
-                            label=u'『支払金額』(『支払対象人数』)',
-                            text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
-                            # data='action=buy&itemid=1'
-                        ),
-                        MessageTemplateAction(
-                        # PostbackTemplateAction(
-                            label=u'『支払金額』(『支払対象人数』)',
-                            text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
-                            # data='action=buy&itemid=1'
-                        ),
-                    ]
-                )
-            ))
+            text = u'現時点の各個人の支払い合計を報告します。\n'
+            groups = db.get_user_groups(event.source.user_id)
+            for gid in groups:
+                if len(groups) > 1:
+                    text += u'グループ：{}'.format(db.get_group_info(gid).get("name"))
+                payments = db.get_groups_payments(gid)
+                totals = {}
+                for payment in payments:
+                    uid = payment["payment_uid"]
+                    amount = payment["amount"]
+                    text += u'{}さんが{}円支払いました\n'.format(get_name(uid), amount)
+
+            reply_msgs.append(TextSendMessage(text = text))
+            # uid = event.source.user_id
+            # payments = db.get_user_groups_payments(uid)
+            # for payment in payments:
+            #     pass
+            # reply_msgs.append(TemplateSendMessage(
+            #     alt_text='支払一覧',
+            #     template=ButtonsTemplate(
+            #         # thumbnail_image_url=udb[id].get('image_url', None),
+            #         title=u'支払一覧',
+            #         text = u'リストの登録金額を選択すると詳細を表示するよ。表示は新しいものから表示しています。',
+            #         actions=[
+            #             MessageTemplateAction(
+            #             # PostbackTemplateAction(
+            #                 label=u'『支払金額』(『支払対象人数』)',
+            #                 text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
+            #                 # data='action=buy&itemid=1'
+            #             ),
+            #             MessageTemplateAction(
+            #             # PostbackTemplateAction(
+            #                 label=u'『支払金額』(『支払対象人数』)',
+            #                 text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
+            #                 # data='action=buy&itemid=1'
+            #             ),
+            #             MessageTemplateAction(
+            #             # PostbackTemplateAction(
+            #                 label=u'『支払金額』(『支払対象人数』)',
+            #                 text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
+            #                 # data='action=buy&itemid=1'
+            #             ),
+            #             MessageTemplateAction(
+            #             # PostbackTemplateAction(
+            #                 label=u'『支払金額』(『支払対象人数』)',
+            #                 text=cmd_prefix + u'『支払金額』(『支払対象人数』)',
+            #                 # data='action=buy&itemid=1'
+            #             ),
+            #         ]
+            #     )
+            # ))
         elif cmd == u'『支払金額』(『支払対象人数』)':
             text = u'''『対象ユーザ』さんが『項目名』で『支払金額』円支払
 いました。
@@ -718,7 +754,7 @@ def handle_text_message(event):
                 )
             ))
         elif cmd == u'支払削除実行':
-            db.delete_payment(payment_id)
+            # db.delete_payment(payment_id)
             reply_msgs.append(TextSendMessage(text = u'支払を削除しました'))
             reply_msgs.append(TemplateSendMessage(
                 alt_text=u'支払一覧に戻りますか?',
@@ -829,10 +865,52 @@ def handle_text_message(event):
                 )
             ))
         elif cmd == u'精算実行・更新実行':
-            reply_msgs.append(TextSendMessage(text = u'精算結果をグループラインに投稿しました'))
-            reply_msgs.append(TextSendMessage(text = u'''精算結果をお知らせします
-『対象ユーザ』さんに『未精算金額』円払ってください or『対象ユーザ』さんに『未精算金額』円もらってくだ さい
-支払が完了したら精算報告をしてください or 受取が完了したら精算報告をしてください'''))
+            text = u''
+            uid = event.source.user_id
+            groups = db.get_user_groups(uid)
+            for gid in groups:
+                if len(groups) > 1:
+                    text += u'グループ：{}'.format(db.get_group_info(gid).get("name"))
+                payments = db.get_groups_payments(gid)
+                totals = {}
+                for payment in payments:
+                    uid = payment["payment_uid"]
+                    amount = payment["amount"]
+                    totals[uid] = totals.get(uid,0) + amount
+
+                users = db.get_group_users(gid)
+
+                transfer_text = u''
+                transfer_list = warikan.calc_warikan2(users, totals)
+                for transfer in transfer_list:
+                    transfer_text += u'{}さんは{}さんに{}円支払ってください\n'.format(get_name(transfer["from"]), get_name(transfer["to"]), transfer["amount"])
+                    pay_text = u'{}さんに{}円支払ってください\n'.format(get_name(transfer["to"]), transfer["amount"])
+                    rec_text = u'{}さんから{}円受け取ってください\n'.format(get_name(transfer["from"]), transfer["amount"])
+                    print pay_text
+                    print rec_text
+                    print transfer["from"]
+                    if transfer["from"] == uid:
+                        text += pay_text
+                    else:
+                        # line_bot_api.push_message(transfer["from"], TextSendMessage(text = push_text))
+                        pass
+                    if transfer["to"] == uid:
+                        text += rec_text
+                    else:
+                        pass
+
+
+                line_bot_api.push_message(gid, TextSendMessage(text = transfer_text))
+
+            if len(text):
+                reply_msgs.append(TextSendMessage(text = text))
+
+#             text = u''
+#
+#             reply_msgs.append(TextSendMessage(text = u'精算結果をグループラインに投稿しました'))
+#             reply_msgs.append(TextSendMessage(text = u'''精算結果をお知らせします
+# 『対象ユーザ』さんに『未精算金額』円払ってください or『対象ユーザ』さんに『未精算金額』円もらってくだ さい
+# 支払が完了したら精算報告をしてください or 受取が完了したら精算報告をしてください'''))
             # ここでグループに投稿
 
         elif cmd == u'精算実行・更新中止':
@@ -1288,6 +1366,19 @@ http://www.checkun.com/'''))
             elif event.message.text == u'いいえ':
                 reply_msgs.append(TextSendMessage(text = u'登録完了しました！この内容でみんなに報告しますね！'))
                 # ここでDB登録＆みんなに報告
+                groups = db.get_user_groups(id)
+                for gid in groups:
+                    db.add_payment(gid, id, udb[id]["amount"], udb[id].get("use"), udb[id].get("image"))
+
+                    msgs = []
+                    name = get_name(id)
+                    if "use" in udb[id]:
+                        msgs.append(TextSendMessage(text = u'{}さんが{}に{}円支払いました'.format(name, udb[id].get("use"), udb[id]["amount"])))
+                    else:
+                        msgs.append(TextSendMessage(text = u'{}さんが{}円支払いました'.format(name, udb[id]["amount"])))
+                    if "image" in udb[id]:
+                        msgs.append(ImageSendMessage(original_content_url = udb[id]["image"], preview_image_url = udb[id]["image"]))
+                    line_bot_api.push_message(gid, msgs)
 
                 del udb[id]
             else:
@@ -1371,6 +1462,19 @@ http://www.checkun.com/'''))
             if event.message.text == u'OK':
                 reply_msgs.append(TextSendMessage(text = u'登録完了しました！この内容でみんなに報告しますね！'))
                 # ここでDB登録＆みんなに報告
+                groups = db.get_user_groups(id)
+                for gid in groups:
+                    db.add_payment(gid, id, udb[id]["amount"], udb[id].get("use"), udb[id].get("image_url"))
+
+                    msgs = []
+                    name = get_name(id)
+                    if "use" in udb[id]:
+                        msgs.append(TextSendMessage(text = u'{}さんが{}に{}円支払いました'.format(name, udb[id].get("use"), udb[id]["amount"])))
+                    else:
+                        msgs.append(TextSendMessage(text = u'{}さんが{}円支払いました'.format(name, udb[id]["amount"])))
+                    if "image_url" in udb[id]:
+                        msgs.append(ImageSendMessage(original_content_url = udb[id]["image_url"], preview_image_url = udb[id]["image_url"]))
+                    line_bot_api.push_message(gid, msgs)
 
                 del udb[id]
             elif event.message.text == u'訂正する':
@@ -1421,11 +1525,48 @@ http://www.checkun.com/'''))
             else:
                 reply_msgs.append(TextSendMessage(text = u'入力できるのは1〜99だよ'))
 
+        if(event.message.text == u'バイバイ'):
+            # del_warikan_group(event.source)
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=u'またね'))
+            if(event.source.type == 'group'):
+                line_bot_api.leave_group(event.source.group_id)
+                gid = event.source.group_id
+            elif(event.source.type == 'room'):
+                line_bot_api.leave_room(event.source.room_id)
+                gid = event.source.room_id
+            db.delete_group(gid)
 
-    if len(reply_msgs) == 0:
-        reply_msgs.append(TextSendMessage(text = udb[id]['status']))
+        if(event.message.text == u'リンク'):
+            if(event.source.type == 'group'):
+                gid = event.source.group_id
+            elif(event.source.type == 'room'):
+                gid = event.source.room_id
+            reply_msgs.append(TextSendMessage(text = line_friend_url))
+            reply_msgs.append(ImageSendMessage(original_content_url = line_qr_url, preview_image_url = line_qr_url))
 
-    line_bot_api.reply_message(event.reply_token, reply_msgs)
+            link_uri='https://access.line.me/dialog/oauth/weblogin?response_type=code&client_id={}&redirect_uri={}&state={}'.format(line_login_channel_id, urllib.quote(auth_url), gid)
+            reply_msgs.append(ImagemapSendMessage(
+                base_url=base_url + '/images/LINELogin',
+                alt_text='this is an imagemap',
+                base_size=BaseSize(height=302, width=1040),
+                actions=[
+                    URIImagemapAction(
+                        link_uri=link_uri,
+                        area=ImagemapArea(x=0, y=0, width=1040, height=302)
+                    ),
+                ]
+            ))
+
+    # if len(reply_msgs) == 0:
+    #     reply_msgs.append(TextSendMessage(text = udb[id]['status']))
+
+    if len(reply_msgs):
+        try:
+            line_bot_api.reply_message(event.reply_token, reply_msgs)
+        except LineBotApiError as e:
+            print_error(e)
 
 def save_content(message_id, filename):
     message_content = line_bot_api.get_message_content(message_id)
@@ -1504,11 +1645,51 @@ def handle_unfollow_message(event):
 
 @handler.add(JoinEvent)
 def handle_join_message(event):
-    pass
+    # add_friendsdb(event.source)
+
+    if event.source.type == 'group':
+        gid = event.source.group_id
+    elif event.source.type == 'room':
+        gid = event.source.room_id
+
+    msgs=[]
+
+    text = u'はじめまして、Checkunです。このグループの会計係をさせていただきます！\n' \
+        u'まずは、このグループメンバー全員の方とお友達になりたいです。\n' \
+        u'次のURLかQRコードで友達になってね。\n' \
+        u'友達になったら下のログインボタンで清算グループに入ってね。' \
+        # u'グループのスタンプを決めて送ってね'
+        # u'左のボタンを押して私と友達になって、右のボタンで清算グループに入ってください！'
+    msgs.append(TextSendMessage(text = text))
+
+    msgs.append(TextSendMessage(text = line_friend_url))
+    msgs.append(ImageSendMessage(original_content_url = line_qr_url, preview_image_url = line_qr_url))
+
+    link_uri='https://access.line.me/dialog/oauth/weblogin?response_type=code&client_id={}&redirect_uri={}&state={}'.format(line_login_channel_id, urllib.quote(auth_url), gid)
+    msgs.append(ImagemapSendMessage(
+        base_url=base_url + '/images/LINELogin',
+        alt_text='this is an imagemap',
+        base_size=BaseSize(height=302, width=1040),
+        actions=[
+            URIImagemapAction(
+                link_uri=link_uri,
+                area=ImagemapArea(x=0, y=0, width=1040, height=302)
+            ),
+        ]
+    ))
+
+    line_bot_api.reply_message(event.reply_token, msgs)
+
+    db.add_group(gid,event.source.type)
+    # add_warikan_group(event.source)
 
 @handler.add(LeaveEvent)
 def handle_leave_message(event):
-    pass
+    if event.source.type == 'group':
+        gid = event.source.group_id
+    elif event.source.type == 'room':
+        gid = event.source.room_id
+    db.delete_group(gid)
 
 
 @handler.add(PostbackEvent)
